@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Genie</string>
+    <string name="notification_title_downloading">Downloading Model</string>
+    <string name="notification_content_downloading">Download in progress: %1$d%%</string>
+    <string name="notification_title_success">Download Complete</string>
+    <string name="notification_content_success">%1$s is ready to use</string>
+    <string name="hf_token_hint">Enter your HuggingFace Access Token</string>
+    <string name="hf_token_save">Save Token</string>
+    <string name="enable_accessibility">Enable Genie Accessibility Service</string>
+    <string name="grant_permissions">Grant Required Permissions</string>
+    <string name="biometric_title">Genie Security Check</string>
+    <string name="biometric_subtitle">Authorize this action</string>
+    <string name="biometric_cancel">Cancel</string>
+</resources>

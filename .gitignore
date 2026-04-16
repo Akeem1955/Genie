@@ -1,0 +1,114 @@
+# ============================================================
+# Genie — .gitignore
+# ============================================================
+
+# ============================================================
+# SENSITIVE — Never commit these
+# ============================================================
+
+# HuggingFace tokens or any local secrets
+*.token
+*.secret
+local.properties
+
+# Encrypted SharedPreferences backup files (if exported)
+genie_secure_prefs*
+
+# API keys accidentally placed in a file
+*api_key*
+*hf_token*
+
+# ============================================================
+# MODEL FILES — Large binary files, downloaded at runtime
+# ============================================================
+
+# The Gemma 4 .litertlm model file (~1.5 GB)
+*.litertlm
+
+# Vosk model directory (downloaded by StorageService on first boot)
+app/src/main/assets/vosk_model*/
+vosk_model*/
+model/
+
+# Any partial/temp download files
+*.genietmp
+
+# ============================================================
+# ANDROID BUILD OUTPUTS
+# ============================================================
+
+# Gradle build directories
+build/
+app/build/
+.gradle/
+
+# Gradle cache
+.gradle/
+gradle/.gradle/
+gradle/wrapper/dists/
+gradle/wrapper/~*
+
+# APK and bundle outputs
+*.apk
+*.aab
+*.ap_
+
+# Mapping (ProGuard)
+mapping.txt
+*.map
+
+# ============================================================
+# ANDROID STUDIO / IDE
+# ============================================================
+
+# IDE project files
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Android Studio local files
+local.properties
+.DS_Store
+Thumbs.db
+
+# Android virtual device (emulator)
+*.avd/
+
+# Navigation editor
+.navigation/
+
+# ============================================================
+# KOTLIN / JVM
+# ============================================================
+
+# Compiled class files
+*.class
+out/
+
+# Room schema exports (if exportSchema = true, not needed in repo)
+app/schemas/
+
+# ============================================================
+# LOGS & TEMP
+# ============================================================
+
+*.log
+tmp/
+temp/
+.tmp/
+
+# ============================================================
+# OS FILES
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
