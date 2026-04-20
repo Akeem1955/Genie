@@ -2,7 +2,7 @@
 
 > *"What if your phone didn't just listen to you — what if it could think, plan, act, learn from its mistakes, and remember what you like?"*
 
-Genie is not a chatbot. It is not a voice assistant. Genie is an **autonomous AI agent** that lives inside Android's Accessibility Service layer and can **see your screen, touch your apps, read your content, and execute multi-step tasks** — all powered by a 2-billion-parameter language model running entirely on your device, with zero cloud dependency.
+Genie is not a chatbot. It is not a voice assistant. Genie is an **autonomous AI agent** that lives inside Android's Accessibility Service layer and can **see your screen, touch your apps, read your content, and execute multi-step tasks** — all powered by a Gemma 4 LiteRT-LM package running entirely on your device, with zero cloud dependency.
 
 This document tells the full story of how Genie works, from the moment a user installs it to the moment it completes its hundredth task faster than its first.
 
@@ -10,16 +10,54 @@ This document tells the full story of how Genie works, from the moment a user in
 
 ## Table of Contents
 
-- [Chapter 1: The First Launch — Bootstrap](#chapter-1-the-first-launch--bootstrap)
-- [Chapter 2: The Wake Word — Listening for "Gemma"](#chapter-2-the-wake-word--listening-for-gemma)
-- [Chapter 3: The Brain Thinks — LiteRT-LM Inference](#chapter-3-the-brain-thinks--litert-lm-inference)
-- [Chapter 4: The Agent Loop — Planning Like a Human](#chapter-4-the-agent-loop--planning-like-a-human)
-- [Chapter 5: The Hands — Touching the OS](#chapter-5-the-hands--touching-the-os)
-- [Chapter 6: The Safety Net — Human-in-the-Loop](#chapter-6-the-safety-net--human-in-the-loop)
-- [Chapter 7: The Memory — Learning and Evolving](#chapter-7-the-memory--learning-and-evolving)
-- [Chapter 8: When Things Go Wrong — Error Taxonomy](#chapter-8-when-things-go-wrong--error-taxonomy)
-- [Chapter 9: The Nervous System — Observability](#chapter-9-the-nervous-system--observability)
-- [Appendix: The Full File Map](#appendix-the-full-file-map)
+- [🧞 Genie — The Story of an Autonomous Android AI Agent](#-genie--the-story-of-an-autonomous-android-ai-agent)
+  - [Table of Contents](#table-of-contents)
+  - [Chapter 1: The First Launch — Bootstrap](#chapter-1-the-first-launch--bootstrap)
+    - [The Story](#the-story)
+    - [What Happens Under the Hood](#what-happens-under-the-hood)
+    - [The Key Files](#the-key-files)
+    - [Where This Code Came From](#where-this-code-came-from)
+  - [Chapter 2: The Wake Word — Listening for "Gemma"](#chapter-2-the-wake-word--listening-for-gemma)
+    - [The Story](#the-story-1)
+    - [What Happens Under the Hood](#what-happens-under-the-hood-1)
+    - [Why Two Speech Engines?](#why-two-speech-engines)
+  - [Chapter 3: The Brain Thinks — LiteRT-LM Inference](#chapter-3-the-brain-thinks--litert-lm-inference)
+    - [The Story](#the-story-2)
+    - [What Happens Under the Hood](#what-happens-under-the-hood-2)
+    - [The Critical Configuration](#the-critical-configuration)
+    - [Where This Code Came From](#where-this-code-came-from-1)
+  - [Chapter 4: The Agent Loop — Planning Like a Human](#chapter-4-the-agent-loop--planning-like-a-human)
+    - [The Story](#the-story-3)
+    - [What Happens Under the Hood](#what-happens-under-the-hood-3)
+    - [The Sliding Window](#the-sliding-window)
+    - [The Prompt](#the-prompt)
+    - [The Key Files](#the-key-files-1)
+  - [Chapter 5: The Hands — Touching the OS](#chapter-5-the-hands--touching-the-os)
+    - [The Story](#the-story-4)
+    - [What Happens Under the Hood](#what-happens-under-the-hood-4)
+    - [The Full Tool Arsenal](#the-full-tool-arsenal)
+    - [The ToolServiceContext Pattern](#the-toolservicecontext-pattern)
+    - [The Gesture System](#the-gesture-system)
+    - [The Key Files](#the-key-files-2)
+  - [Chapter 6: The Safety Net — Human-in-the-Loop](#chapter-6-the-safety-net--human-in-the-loop)
+    - [The Story](#the-story-5)
+    - [What Happens Under the Hood](#what-happens-under-the-hood-5)
+    - [Why a Transparent Activity?](#why-a-transparent-activity)
+    - [The Key Files](#the-key-files-3)
+  - [Chapter 7: The Memory — Learning and Evolving](#chapter-7-the-memory--learning-and-evolving)
+    - [The Story](#the-story-6)
+    - [The Fact Store](#the-fact-store)
+    - [Memory Flow](#memory-flow)
+    - [The Key Files](#the-key-files-4)
+  - [Chapter 8: When Things Go Wrong — Error Taxonomy](#chapter-8-when-things-go-wrong--error-taxonomy)
+    - [The Story](#the-story-7)
+    - [Failure Handling Loop](#failure-handling-loop)
+    - [The Four Tiers](#the-four-tiers)
+  - [Chapter 9: The Nervous System — Observability](#chapter-9-the-nervous-system--observability)
+    - [The Story](#the-story-8)
+    - [The Key Files](#the-key-files-5)
+  - [Appendix: The Full File Map](#appendix-the-full-file-map)
+  - [The End-to-End Flow (One Picture)](#the-end-to-end-flow-one-picture)
 
 ---
 
@@ -27,71 +65,83 @@ This document tells the full story of how Genie works, from the moment a user in
 
 ### The Story
 
-A user installs Genie for the first time. They open the app and see a minimal setup screen — not a chat interface, not a tutorial, just three things:
+A user installs Genie for the first time. They open the app and see a minimal setup screen — not a chat interface, not a tutorial, just two things:
 
-1. **A text field** asking for their HuggingFace access token
-2. **A button** to enable the Accessibility Service
-3. **A status card** showing what's been done
+1. **A button** to enable the Accessibility Service
+2. **A status card** showing what's been done
 
-The user pastes their HuggingFace token (required because Gemma 4 weights are gated) and taps "Save Token." The token is encrypted using AES-256-GCM via Android's `EncryptedSharedPreferences` and never leaves the device.
+The app is configured for S3-only model delivery.
 
 They tap "Enable Genie Accessibility Service" and are taken to Android's Accessibility Settings. They toggle Genie on. The moment they do, the **bootstrap sequence** fires.
 
 ### What Happens Under the Hood
 
-```
-GenieAccessibilityService.onServiceConnected()
-    │
-    ├── 1. Check RECORD_AUDIO permission
-    │       └── If missing → launch MainActivity → disableSelf()
-    │
-    ├── 2. Initialize EventLogger
-    │       └── Starts the async Channel<GenieEvent> consumer
-    │
-    └── 3. Launch Bootstrap coroutine (Dispatchers.Default)
-            │
-            ├── 3a. Check if model exists locally
-            │       └── GenieModelConfig.isDownloaded(context)
-            │           checks: getExternalFilesDir/litert_community_Gemma4.../main/gemma4-2b-it-4b.litertlm
-            │
-            ├── 3b. If not downloaded → ModelDownloadManager.ensureModelReady()
-            │       └── Creates a OneTimeWorkRequest<ModelDownloadWorker>
-            │       └── WorkManager enqueues with REPLACE policy
-            │       └── Worker runs as foreground service (notification: "Downloading Gemma 4 2B")
-            │       └── HTTP GET to HuggingFace with Bearer token
-            │       └── Writes to .genietmp → renames to final on complete
-            │       └── Reports progress via setProgress() every 200ms
-            │       └── Manager observes via getWorkInfoByIdLiveData → emits StateFlow<DownloadState>
-            │
-            ├── 3c. Initialize GenieEngine
-            │       └── EngineConfig(modelPath, Backend.GPU(), maxNumTokens=1024)
-            │       └── Engine(engineConfig).initialize()  ← This is the heavy call (~3-5 seconds)
-            │       └── ConversationConfig(samplerConfig, systemInstruction, automaticToolCalling=false)
-            │       └── engine.createConversation(config)
-            │
-            ├── 3d. Initialize AgentOrchestrator
-            │       └── Wires: GenieEngine + ToolRegistry + PromptBuilder + Planner + FactDao + SkillDao
-            │
-            └── 3e. Initialize Voice Stack
-                    ├── Vosk wake-word engine (unpacks model from assets)
-                    ├── TextToSpeech engine
-                    ├── SpeechRecognizer for command capture
-                    └── TTS: "Hi! I'm Genie, your AI accessibility agent. Say Gemma to wake me up."
+```mermaid
+flowchart TD
+    A([GenieAccessibilityService.onServiceConnected]) --> B
+
+    B[/"① Check RECORD_AUDIO permission"/]
+    B -->|missing| C[launch MainActivity → disableSelf]
+    B -->|granted| D
+
+    D["② Initialize EventLogger\nstarts async Channel＜GenieEvent＞ consumer"]
+    D --> E
+
+    subgraph E ["③ Bootstrap coroutine — Dispatchers.Default"]
+        direction TD
+
+        E1["3a · GenieModelConfig.DEFAULT.isDownloaded\ncheck: getExternalFilesDir/.../gemma-4-E4B-it.litertlm"]
+        E1 -->|not downloaded| E2
+        E1 -->|exists| E3
+
+        subgraph E2 ["3b · ModelDownloadManager.ensureModelReady()"]
+            direction TB
+            D1["OneTimeWorkRequest＜ModelDownloadWorker＞\nWorkManager enqueues — REPLACE policy"]
+            D2["Foreground service\nnotification: 'Downloading Gemma 4 model'"]
+            D3["HTTP GET → S3 URL\nwrites to .genietmp → renames on complete"]
+            D4["setProgress() every 200 ms\nStateFlow＜DownloadState＞ via getWorkInfoByIdLiveData"]
+            D1 --> D2 --> D3 --> D4
+        end
+
+        E2 --> E3
+
+        E3["3c · Initialize GenieEngine\nEngineConfig(modelPath, Backend.GPU(), maxNumTokens=1024)\nEngine.initialize() ← heavy call ~3-5 s\nConversationConfig(samplerConfig, systemInstruction, tools, automaticToolCalling=false)\nengine.createConversation(config)"]
+
+        E3 --> E4
+
+        E4["3d · Initialize AgentOrchestrator\nwires: GenieEngine + ToolRegistry + PromptBuilder\n+ Planner + FactDao + SkillDao\n+ awareness tracker + screen-map store"]
+
+        E4 --> E5
+
+        subgraph E5 ["3e · Voice Stack"]
+            direction TB
+            V1["Vosk wake-word engine\nunpacks model from assets"]
+            V2["TextToSpeech engine"]
+            V3["SpeechRecognizer — command capture"]
+            V4["TTS: 'Hi! I'm Genie, your AI accessibility agent.\nSay Gemma to wake me up.'"]
+            V1 --> V2 --> V3 --> V4
+        end
+    end
+
+    style C fill:#4b1c1c,color:#fca5a5,stroke:#ef4444
+    style E fill:#0f172a,color:#e2e8f0,stroke:#334155
+    style E2 fill:#1c1708,color:#fde68a,stroke:#f59e0b
+    style E5 fill:#1a0f2e,color:#e9d5ff,stroke:#a855f7
 ```
 
 ### The Key Files
 
 | File | Role |
 |------|------|
-| [`MainActivity.kt`](app/src/main/java/com/akimy/genie/MainActivity.kt) | One-time setup UI: HF token input (encrypted), permission grant, A11y enable |
-| [`GenieModelConfig.kt`](app/src/main/java/com/akimy/genie/engine/GenieModelConfig.kt) | Model metadata: HF repo ID, file name, size, local path computation |
-| [`ModelDownloadWorker.kt`](app/src/main/java/com/akimy/genie/engine/ModelDownloadWorker.kt) | Background download with resume, Bearer auth, foreground notification |
+| [`MainActivity.kt`](app/src/main/java/com/akimy/genie/MainActivity.kt) | One-time setup UI: permission grant and A11y enable |
+| [`GenieModelConfig.kt`](app/src/main/java/com/akimy/genie/engine/GenieModelConfig.kt) | Model metadata: S3 URL, file name, size, local path computation |
+| [`ModelDownloadWorker.kt`](app/src/main/java/com/akimy/genie/engine/ModelDownloadWorker.kt) | Background download with resume and foreground notification |
 | [`ModelDownloadManager.kt`](app/src/main/java/com/akimy/genie/engine/ModelDownloadManager.kt) | WorkManager orchestration, `StateFlow<DownloadState>` emission |
 | [`GenieAccessibilityService.kt`](app/src/main/java/com/akimy/genie/service/GenieAccessibilityService.kt) | The bootstrap entry point (`onServiceConnected()`) |
 
 ### Where This Code Came From
 
-The download pipeline is adapted from Google's **AI Edge Gallery** app. Gallery's `DownloadWorker.kt` (370 lines) handles HuggingFace downloads with resume support, Bearer tokens, and temporary file management. We extracted the core HTTP streaming loop, progress reporting, and foreground service pattern, then stripped Firebase analytics, deep-link notifications, and zip extraction logic that Genie doesn't need.
+The download pipeline is adapted from Google's **AI Edge Gallery** app. We extracted the core HTTP streaming loop, resume behavior, progress reporting, and foreground service pattern, then stripped Firebase analytics, deep-link notifications, and zip extraction logic that Genie doesn't need.
 
 ---
 
@@ -138,7 +188,7 @@ onResults { results ->
 - **Vosk** runs continuously but is lightweight — it only needs to detect one word. It runs offline, uses ~30MB RAM, and has near-zero latency for wake-word detection.
 - **Android SpeechRecognizer** is heavy but accurate — it handles full sentence recognition with proper grammar and punctuation. It only activates after the wake word.
 
-This dual-engine pattern was borrowed directly from **BetaAssist**, where it was proven to work reliably on mid-range Android devices.
+This dual-engine pattern is part of Genie's voice architecture because it works reliably on mid-range Android devices while keeping wake-word detection lightweight.
 
 ---
 
@@ -159,8 +209,12 @@ fun sendAgentMessage(text: String): Flow<AgentResponse> = callbackFlow {
         Contents.of(Content.Text(text)),
         object : MessageCallback {
             override fun onMessage(message: Message) {
-                // Each token is emitted as it's generated
-                trySend(AgentResponse.Token(message.toString()))
+                // Native tool-calling: model may return toolCalls instead of plain text
+                if (message.toolCalls.isNotEmpty()) {
+                    trySend(AgentResponse.ToolCallRequest(message))
+                } else {
+                    trySend(AgentResponse.Token(message.toString()))
+                }
             }
             override fun onDone() {
                 trySend(AgentResponse.Done)
@@ -212,53 +266,40 @@ Each iteration of this loop is one call to the LLM planner.
 
 ### What Happens Under the Hood
 
-```
-AgentOrchestrator.executeGoal("Open Settings and turn on Wi-Fi")
-    │
-    ├── Initialize AgentState(goal = "Open Settings and turn on Wi-Fi")
-    │   └── history = [UserMessage("Open Settings and turn on Wi-Fi")]
-    │
-    ├── Check SkillLibrary → no match (first time)
-    │
-    └── LOOP (max 20 iterations):
-        │
-        ├── 1. BUILD PROMPT
-        │   │   PromptBuilder.buildPrompt(state, facts)
-        │   │
-        │   ├── Inject User Preferences: "preferred_language: English"
-        │   ├── Inject Goal: "Open Settings and turn on Wi-Fi"
-        │   ├── Inject History Window (last 10 entries):
-        │   │     [USER] Open Settings and turn on Wi-Fi
-        │   │     [AGENT] Called tool: read_screen({})
-        │   │     [RESULT] read_screen → OK: Home · Chrome · Settings · Camera...
-        │   │     [AGENT] Called tool: open_app({name: Settings})
-        │   │     [RESULT] open_app → OK: Opened 'Settings'
-        │   └── Append: "Based on the goal and history above, output your next JSON decision:"
-        │
-        ├── 2. PLAN (LLM inference)
-        │   │   Planner.plan(prompt) → sends to GenieEngine
-        │   │   Model outputs: {"action": "act", "tool": "click", "args": {"target": "Network & internet"}}
-        │   │
-        │   └── parseDecision() strips markdown fences, extracts JSON, returns Decision.Act
-        │
-        ├── 3. EXECUTE
-        │   │   ToolRegistry.getTool("click") → ClickTool
-        │   │   ClickTool.execute(args, serviceContext)
-        │   │     → UINodeParser.findClickableNode(root, "Network & internet")
-        │   │     → BFS traversal of accessibility tree
-        │   │     → Found node! → performAction(ACTION_CLICK) → true
-        │   │
-        │   └── Returns ToolOutcome.Ok("Clicked on 'Network & internet'")
-        │
-        ├── 4. EVALUATE
-        │   │   outcome is Ok → add to history, prune transient errors
-        │   │   Continue loop...
-        │
-        └── Eventually: Model outputs {"action": "finish", "summary": "Wi-Fi has been turned on."}
-            │
-            ├── TTS: "Wi-Fi has been turned on."
-            ├── Write to SkillLibrary (novel plan → self-evolution)
-            └── Resume wake-word listening
+```mermaid
+flowchart TD
+    A([AgentOrchestrator.executeGoal]) --> B[Initialize AgentState\nadd UserMessage to history]
+    B --> C{findSkillMatch(goal)}
+
+    C -->|BuiltIn or Stored skill| D[executeCachedPlan\nstep through cached Decision.Act list]
+    D --> D1{all steps succeeded?}
+    D1 -->|yes| Z[finish_task summary\nresume wake-word listening]
+    D1 -->|no| E
+
+    C -->|no match| E
+
+    subgraph LOOP [Main loop max 20]
+        direction TD
+        E[Build prompt\nGoal + injected facts + sliding window history] --> F[Planner.plan(prompt)\nvia GenieEngine]
+        F --> G{PlanResult}
+        G -->|Decision.Act| H[executeToolWithSafety]
+        G -->|Decision.Finish| Z
+        G -->|ParseError| E
+
+        H --> I{RiskAssessor verdict}
+        I -->|Allow| J[ToolRegistry execute]
+        I -->|RequireBiometric| K[HITLInterceptionWrapper\nBiometricAuthActivity]
+        K --> J
+
+        J --> L[handleSpecialTools\nFacts, PDF, visualizer, board, annotation]
+        L --> M{ToolOutcome}
+        M -->|Ok| E
+        M -->|TransientErr| N[retry with exponential backoff]
+        N --> E
+        M -->|LogicErr| O[replan and continue]
+        O --> E
+        M -->|AuthErr or FatalErr| P[stop and notify user]
+    end
 ```
 
 ### The Sliding Window
@@ -273,9 +314,9 @@ This means the LLM always sees the goal and the most recent context, even during
 
 ### The Prompt
 
-The system prompt in `PromptBuilder.AGENT_SYSTEM_PROMPT` forces the model to output **strict JSON** — either `{"action": "act", "tool": "...", "args": {...}}` or `{"action": "finish", "summary": "..."}`. No free-text. No markdown. Just structured decisions that the orchestrator can parse deterministically.
+The system prompt in `PromptBuilder.AGENT_SYSTEM_PROMPT` forces the model to emit **exactly one native LiteRT-LM tool call per turn**. Plain text during planning is treated as invalid. Goal completion is represented as a `finish_task(summary=...)` tool call, which the planner maps into `Decision.Finish`.
 
-The prompt also lists every available tool with its arguments, preventing the model from hallucinating tools that don't exist.
+The prompt also injects explicit behavior rules for accessibility-aware exploration tools, continuous-reader tools, screen-map memory tools, visualizer/teaching-board tools, and annotation tools.
 
 ### The Key Files
 
@@ -285,7 +326,9 @@ The prompt also lists every available tool with its arguments, preventing the mo
 | [`AgentState.kt`](app/src/main/java/com/akimy/genie/agent/AgentState.kt) | `Decision.Act`, `Decision.Finish`, `HistoryEntry`, `ToolOutcome` |
 | [`SlidingWindowManager.kt`](app/src/main/java/com/akimy/genie/agent/SlidingWindowManager.kt) | Context window truncation + error pruning |
 | [`PromptBuilder.kt`](app/src/main/java/com/akimy/genie/agent/PromptBuilder.kt) | System prompt + history assembly |
-| [`Planner.kt`](app/src/main/java/com/akimy/genie/agent/Planner.kt) | Skill cache check → LLM call → JSON parsing |
+| [`Planner.kt`](app/src/main/java/com/akimy/genie/agent/Planner.kt) | Skill cache check → LLM call → native tool-call parsing |
+| [`PlannerToolSchema.kt`](app/src/main/java/com/akimy/genie/agent/PlannerToolSchema.kt) | LiteRT-LM tool schema exposed to planner |
+| [`BuiltInSkillMatcher.kt`](app/src/main/java/com/akimy/genie/agent/BuiltInSkillMatcher.kt) | Deterministic built-in skills before DB skill lookup |
 
 ---
 
@@ -293,57 +336,48 @@ The prompt also lists every available tool with its arguments, preventing the mo
 
 ### The Story
 
-When the Planner decides to act, the agent needs hands. These hands are the **11 tools** registered in the `ToolRegistry`, each backed by Android's Accessibility APIs.
+When the Planner decides to act, the agent needs hands. These hands are the **53 tools** registered in the `ToolRegistry`, each backed by Android's Accessibility APIs and grouped into action, awareness, memory, visualizer, and annotation families.
 
-Let's trace what happens when the agent decides `{"action": "act", "tool": "click", "args": {"target": "Wi-Fi"}}`:
+Let's trace what happens when the planner emits a `click(target="Wi-Fi")` tool call:
 
 ### What Happens Under the Hood
 
-```
-ToolRegistry.execute("click", {"target": "Wi-Fi"}, serviceContext)
-    │
-    ├── Look up tool: tools["click"] → ClickTool
-    │
-    ├── ClickTool.execute(args, serviceContext)
-    │   │
-    │   └── serviceContext.clickElement("Wi-Fi")
-    │       │
-    │       └── GenieAccessibilityService.clickElement("Wi-Fi")
-    │           │
-    │           ├── rootInActiveWindow  ← Gets the current UI tree from the OS
-    │           │
-    │           ├── UINodeParser.findClickableNode(root, "Wi-Fi")
-    │           │   │
-    │           │   ├── BFS traversal of entire accessibility tree
-    │           │   ├── Checks every node's text and contentDescription
-    │           │   ├── First tries exact match: node.text == "Wi-Fi"
-    │           │   ├── Then tries contains: node.text.contains("Wi-Fi")
-    │           │   ├── Found node! But is it clickable?
-    │           │   │   ├── If yes → return it
-    │           │   │   └── If no → walk up parent chain until clickable ancestor found
-    │           │   │
-    │           │   └── Returns the nearest clickable ancestor (e.g., the SettingsRow)
-    │           │
-    │           └── node.performAction(ACTION_CLICK) → OS performs the tap
-    │
-    └── Returns ToolOutcome.Ok("Clicked on 'Wi-Fi'")
+```mermaid
+sequenceDiagram
+    participant O as AgentOrchestrator
+    participant R as ToolRegistry
+    participant T as ClickTool
+    participant S as ToolServiceContext
+    participant A as GenieAccessibilityService
+    participant U as UINodeParser
+
+    O->>R: getTool("click")
+    R-->>O: ClickTool
+    O->>T: execute(args, serviceContext)
+    T->>S: clickElement("Wi-Fi")
+    S->>A: clickElement("Wi-Fi")
+    A->>A: rootInActiveWindow
+    A->>U: findClickableNode(root, "Wi-Fi")
+    U-->>A: clickable node or clickable ancestor
+    A->>A: performAction(ACTION_CLICK)
+    A-->>S: Boolean success
+    S-->>T: Boolean success
+    T-->>O: ToolOutcome.Ok / TransientErr
 ```
 
 ### The Full Tool Arsenal
 
-| Tool | What It Does | Backed By |
+| Family | Representative Tools | What It Does |
 |------|-------------|-----------|
-| `click` | Click a UI element by text/description | `UINodeParser` BFS + `performAction(ACTION_CLICK)` |
-| `type_text` | Type text into focused input | `performAction(ACTION_SET_TEXT)` |
-| `swipe` | Swipe in a direction (up/down/left/right) | `GestureDispatcher.swipe()` via `dispatchGesture()` |
-| `scroll` | Scroll a list up or down | `GestureDispatcher.scroll()` — shorter distance than swipe |
-| `read_screen` | Read all visible text | `UINodeParser.extractAllText()` BFS traversal |
-| `take_screenshot` | Capture the screen as bitmap | `ScreenCapture.captureScreen()` via `takeScreenshot()` |
-| `open_app` | Open any installed app by name | `PackageManager.getLaunchIntentForPackage()` |
-| `go_back` | Press system back | `performGlobalAction(GLOBAL_ACTION_BACK)` |
-| `go_home` | Press system home | `performGlobalAction(GLOBAL_ACTION_HOME)` |
-| `save_fact` | Remember a user preference | Writes to Room `user_facts` table |
-| `retrieve_fact` | Recall a preference | Queries Room `user_facts` table |
+| Core OS Actions | `click`, `type_text`, `swipe`, `scroll`, `open_app`, `go_back`, `go_home`, `take_screenshot` | Directly interacts with Android UI and global navigation |
+| Focus Navigation | `read_focused`, `focus_next`, `focus_previous`, `focus_first`, `focus_by_text`, `focus_by_role`, `activate_focused`, `scroll_forward`, `scroll_backward` | Uses accessibility focus semantics instead of blind touch guesswork |
+| Awareness and Context | `read_screen_summary`, `read_recent_events`, `where_am_i`, `read_nearby_context`, `what_can_i_do_here`, `read_screen_changes`, `read_dialog`, `read_notifications`, `read_form_state` | Gives the planner high-quality situational awareness before acting |
+| Continuous Reader | `enable_continuous_reader`, `disable_continuous_reader`, `read_continuous_reader_status`, `repeat_last_narration` | Spoken ambient guidance and status control |
+| Screen Memory | `read_screen_map`, `save_screen_hint` | Learns landmarks and user hints per recurring screen |
+| Persistent Memory | `save_fact`, `retrieve_fact` | Long-term preference storage in Room |
+| Document I/O | `read_pdf_page_range` | Reads local PDF text page ranges for grounded tasks |
+| Visualizer and Teaching Board | `visualize_concept`, `teach_with_board`, `board_add_object`, `board_update_object`, `board_remove_object`, `board_focus_object`, `board_reveal_step`, `board_next_step`, `board_prev_step`, `board_replay_step`, `board_set_narration` | Builds and teaches concepts with visual scenes and staged board lessons |
+| Annotation | `annotate_scene`, `annotation_add_box`, `annotation_add_label`, `annotation_add_pointer`, `annotation_clear`, `annotation_replay` | Live on-screen overlays with timed replay and persisted annotation sessions |
 
 ### The ToolServiceContext Pattern
 
@@ -362,7 +396,7 @@ interface ToolServiceContext {
 
 ### The Gesture System
 
-BetaAssist had four separate copy-pasted methods: `rightSwipeGesture()`, `leftSwipeGesture()`, `upSwipeGesture()`, `downSwipeGesture()`. We consolidated them into `GestureDispatcher` with a single `swipe(Direction)` method, then added `tap(x, y)` and `longPress(x, y, duration)` that BetaAssist didn't have.
+Genie uses a consolidated gesture layer in `GestureDispatcher` with a single `swipe(Direction)` method, plus `tap(x, y)` and `longPress(x, y, duration)` for more flexible UI automation.
 
 Every gesture method is a **suspend function** that wraps `AccessibilityService.dispatchGesture()` callback into a coroutine using `suspendCancellableCoroutine`. This means the agent loop can `await` a gesture completing before moving to the next step.
 
@@ -372,10 +406,15 @@ Every gesture method is a **suspend function** that wraps `AccessibilityService.
 |------|------|
 | [`ToolRegistry.kt`](app/src/main/java/com/akimy/genie/tools/ToolRegistry.kt) | Central name→tool map, validates existence |
 | [`GenieTool.kt`](app/src/main/java/com/akimy/genie/tools/GenieTool.kt) | Tool interface + `ToolServiceContext` abstraction |
-| [`ToolImplementations.kt`](app/src/main/java/com/akimy/genie/tools/impl/ToolImplementations.kt) | All 11 tool classes |
+| [`ToolImplementations.kt`](app/src/main/java/com/akimy/genie/tools/impl/ToolImplementations.kt) | All runtime tool implementations |
 | [`UINodeParser.kt`](app/src/main/java/com/akimy/genie/service/UINodeParser.kt) | BFS tree traversal, text extraction, node finding |
 | [`GestureDispatcher.kt`](app/src/main/java/com/akimy/genie/service/GestureDispatcher.kt) | Swipe/tap/scroll as suspend functions |
 | [`ScreenCapture.kt`](app/src/main/java/com/akimy/genie/service/ScreenCapture.kt) | `takeScreenshot()` → `Bitmap` coroutine wrapper |
+| [`AccessibilityAwarenessTracker.kt`](app/src/main/java/com/akimy/genie/service/AccessibilityAwarenessTracker.kt) | Event-aware screen semantics and change tracking |
+| [`ScreenMapStore.kt`](app/src/main/java/com/akimy/genie/service/ScreenMapStore.kt) | Persistent screen landmarks and user hints |
+| [`VisualizerLayoutEngine.kt`](app/src/main/java/com/akimy/genie/tools/VisualizerLayoutEngine.kt) | Deterministic layout generation for visualizer scenes |
+| [`VisualizerExportManager.kt`](app/src/main/java/com/akimy/genie/tools/VisualizerExportManager.kt) | PNG export/share pipeline for generated teaching visuals |
+| [`AnnotationOverlayController.kt`](app/src/main/java/com/akimy/genie/service/AnnotationOverlayController.kt) | Live annotation overlay drawing and replay |
 
 ---
 
@@ -385,16 +424,35 @@ Every gesture method is a **suspend function** that wraps `AccessibilityService.
 
 The user says: *"Gemma, send $50 to John via PayPal."*
 
-This is a **dangerous action.** Genie should not blindly click "Send" on a payment screen. This is where the **Human-in-the-Loop (HITL) Safety Wrapper** activates.
+This is a **dangerous action.** Genie should not blindly click "Send" on a payment screen. This is where the **dynamic Human-in-the-Loop (HITL) Safety Wrapper** activates.
 
-Any tool can declare `requiresAuth = true`. When the AgentOrchestrator encounters such a tool, it doesn't execute directly. Instead:
+Unlike static per-tool auth flags, Genie evaluates the current screen context in real time via `RiskAssessor`.
 
-1. **The wrapper fires an Intent** to `BiometricAuthActivity` — a completely invisible `FragmentActivity` with `Theme.Translucent.NoTitleBar`
-2. **The activity triggers `BiometricPrompt`** — the OS biometric overlay appears (fingerprint/face)
-3. **The user authenticates** (or cancels/times out)
-4. **The result flows back** through a Kotlin `Channel<AuthResult>` to the `HITLInterceptionWrapper`
-5. **If approved** → tool executes normally
-6. **If denied** → `ToolOutcome.AuthErr` → agent replans or stops
+For sensitive actions (currently `click` and `type_text`), it computes a risk score from multiple signals such as:
+- payment and transfer keywords,
+- authentication/account setting terms,
+- destructive action words,
+- package heuristics,
+- focused-field semantics.
+
+When two or more medium/high-confidence signals are present, the wrapper requires biometric confirmation before execution.
+
+### What Happens Under the Hood
+
+```mermaid
+flowchart TD
+    A[Decision.Act from planner] --> B[AgentOrchestrator.executeToolWithSafety]
+    B --> C[collect ScreenContextSnapshot\nfocused text, visible text, package, action]
+    C --> D[RiskAssessor.assess(toolName, args, context)]
+    D --> E{RiskVerdict}
+    E -->|Allow| F[Execute tool directly]
+    E -->|RequireBiometric| G[HITLInterceptionWrapper.authenticateAndExecute]
+    G --> H[Launch BiometricAuthActivity]
+    H --> I[BiometricPrompt result]
+    I --> J{Approved?}
+    J -->|yes| F
+    J -->|no| K[ToolOutcome.AuthErr]
+```
 
 ### Why a Transparent Activity?
 
@@ -410,6 +468,7 @@ The user sees the fingerprint overlay appear, authenticates, and the overlay van
 
 | File | Role |
 |------|------|
+| [`RiskAssessor.kt`](app/src/main/java/com/akimy/genie/tools/RiskAssessor.kt) | Dynamic on-screen risk scoring for sensitive actions |
 | [`HITLInterceptionWrapper.kt`](app/src/main/java/com/akimy/genie/tools/HITLInterceptionWrapper.kt) | Intercepts auth-required tools, launches biometric activity, waits for result |
 | [`BiometricAuthActivity.kt`](app/src/main/java/com/akimy/genie/tools/BiometricAuthActivity.kt) | Transparent activity that triggers `BiometricPrompt` |
 
@@ -419,9 +478,14 @@ The user sees the fingerprint overlay appear, authenticates, and the overlay van
 
 ### The Story
 
-Genie just completed "Open Settings and turn on Wi-Fi" for the first time. It took 5 steps and 3 LLM calls. The `AgentOrchestrator` notices this was a **novel plan** (`state.isNovelPlan == true`) and decides to **remember it.**
+Genie just completed "Open Settings and turn on Wi-Fi" for the first time. It took multiple steps and several model turns. The `AgentOrchestrator` marks this as a **novel plan** and decides to **remember it** in persistent storage.
 
-It serializes the successful step sequence as JSON and writes it to the `skills` table:
+At execution time, memory retrieval follows this order:
+1. deterministic built-in skill matching,
+2. Room-backed skill matching,
+3. live planning if no reusable plan exists.
+
+When a novel plan succeeds, Genie serializes the reusable `Decision.Act` sequence and writes it to the `skills` table:
 
 ```json
 {
@@ -433,16 +497,16 @@ It serializes the successful step sequence as JSON and writes it to the `skills`
 
 Two days later, the user says: *"Gemma, turn on Wi-Fi."*
 
-The `Planner` checks the SkillLibrary first:
+The planner checks built-in skills and SkillLibrary first:
 
 ```kotlin
 val skills = skillDao.findMatchingSkills("turn on wi-fi")
 // SQL: SELECT * FROM skills WHERE goalPattern LIKE '%turn on wi-fi%'
 ```
 
-It finds a match! Instead of calling the LLM at all, it **replays the cached plan** — executing each step sequentially. Zero inference latency. If any cached step fails (perhaps the UI has changed), it falls back to live planning.
+If it finds a match, Genie **replays the cached plan** step-by-step with safety checks. If a cached step fails (for example, UI drift), it falls back to live planning.
 
-Every time a cached skill succeeds, its `successCount` gets incremented. Skills with higher success counts are preferred when multiple matches exist. Over time, Genie gets faster at tasks it's done before. **This is self-evolution.**
+Every time a cached skill succeeds, its `successCount` is incremented. Skills with better reliability are prioritized over time. This is local, on-device self-improvement.
 
 ### The Fact Store
 
@@ -455,14 +519,36 @@ Beyond skills, Genie also has a persistent key-value store for user facts:
 - Agent calls `retrieve_fact(key="favorite_restaurant")` → "Mama Cass"
 - Facts are also injected into every prompt via `PromptBuilder`, so the LLM always knows the user's preferences
 
+Genie also persists visual teaching scenes used by visualizer and board tools, so educational state can be replayed and edited across turns.
+
+### Memory Flow
+
+```mermaid
+flowchart TD
+    A[User goal] --> B{BuiltInSkillMatcher}
+    B -->|match| C[Execute built-in plan]
+    B -->|no match| D{SkillDao.findMatchingSkills}
+    D -->|match| E[Execute cached plan]
+    D -->|no match| F[Live planning loop]
+    F --> G{Novel plan success?}
+    G -->|yes| H[Persist skill JSON + successCount]
+    G -->|no| I[No skill write]
+
+    J[save_fact/retrieve_fact] --> K[Room user_facts]
+    L[visualize_concept/teach_with_board] --> M[Room visualizer_scenes]
+```
+
 ### The Key Files
 
 | File | Role |
 |------|------|
+| [`BuiltInSkillMatcher.kt`](app/src/main/java/com/akimy/genie/agent/BuiltInSkillMatcher.kt) | Deterministic fast-path skill matching |
 | [`Skill.kt`](app/src/main/java/com/akimy/genie/data/Skill.kt) | Room entity: `goalPattern`, `planJson`, `successCount` |
 | [`SkillDao.kt`](app/src/main/java/com/akimy/genie/data/SkillDao.kt) | Find matching skills, increment success count |
 | [`UserFact.kt`](app/src/main/java/com/akimy/genie/data/UserFact.kt) | Room entity: `key`, `value`, timestamps |
 | [`FactDao.kt`](app/src/main/java/com/akimy/genie/data/FactDao.kt) | CRUD + upsert for user facts |
+| [`VisualizerSceneEntity.kt`](app/src/main/java/com/akimy/genie/data/VisualizerSceneEntity.kt) | Room entity for persisted visual teaching scenes |
+| [`VisualizerSceneDao.kt`](app/src/main/java/com/akimy/genie/data/VisualizerSceneDao.kt) | Scene upsert/query/delete operations |
 | [`GenieDatabase.kt`](app/src/main/java/com/akimy/genie/data/GenieDatabase.kt) | Room singleton housing both tables |
 
 ---
@@ -471,27 +557,34 @@ Beyond skills, Genie also has a persistent key-value store for user facts:
 
 ### The Story
 
-The agent says: `{"action": "act", "tool": "click", "args": {"target": "Wi-Fi"}}`. But the Settings app hasn't finished loading yet. `UINodeParser.findClickableNode()` returns null. The ClickTool returns `ToolOutcome.TransientErr("Could not find clickable element: 'Wi-Fi'")`.
+The planner emits `click(target="Wi-Fi")`, but Settings has not fully rendered yet. `UINodeParser.findClickableNode()` returns null. The click tool returns `ToolOutcome.TransientErr("Could not find clickable element: 'Wi-Fi'")`.
 
-The orchestrator classifies this and responds:
+The orchestrator classifies this and retries with exponential backoff.
 
-```
-TransientErr → Retry with backoff
-    Attempt 1: wait 1 second → retry
-    Attempt 2: wait 2 seconds → retry
-    Attempt 3: wait 4 seconds → retry
-    Attempt 4 (maxRetries exceeded): "I couldn't complete this step."
-```
+Now imagine a different failure: the model requests a non-existent tool call like `send_money(...)`. `ToolRegistry` returns `ToolOutcome.LogicErr("Unknown tool 'send_money'")`.
 
-Now imagine a different failure: The model outputs `{"action": "act", "tool": "send_money", "args": {...}}`. There is no `send_money` tool. The `ToolRegistry` returns `ToolOutcome.LogicErr("Unknown tool 'send_money'")`.
+That error is appended to history so the model can self-correct on the next planning turn.
 
-```
-LogicErr → Replan
-    The error is added to the history, so the model can see its mistake.
-    On the next loop iteration, the model sees:
-        [RESULT] send_money → LOGIC_ERROR: Unknown tool 'send_money'. Available tools: click, type_text...
-    It should now choose a valid tool.
-    If it keeps making logic errors (maxReplans exceeded): "I couldn't figure out how to do this."
+### Failure Handling Loop
+
+```mermaid
+flowchart TD
+    A[Tool execution result] --> B{Outcome type}
+
+    B -->|Ok| C[Continue next planning turn]
+
+    B -->|TransientErr| D[Retry same tool\nexponential backoff]
+    D --> E{Retries exceeded?}
+    E -->|no| A
+    E -->|yes| F[Return failure summary]
+
+    B -->|LogicErr| G[Append logic error to history]
+    G --> H{Replans exceeded?}
+    H -->|no| C
+    H -->|yes| I[Stop with planning failure message]
+
+    B -->|AuthErr| J[Stop; user denied auth]
+    B -->|FatalErr| K[Hard stop; unrecoverable]
 ```
 
 ### The Four Tiers
@@ -536,109 +629,101 @@ This is the first thing you'd look at when debugging. Every state transition, ev
 
 ## Appendix: The Full File Map
 
-```
-c:\Users\akimy\Documents\Gemma4Project\Genie\
-│
-├── settings.gradle.kts          ← Root project: "Genie", includes :app
-├── build.gradle.kts             ← Top-level plugins
-├── gradle/
-│   └── libs.versions.toml      ← 16 dependencies from 3 sources
-│
-└── app/
-    ├── build.gradle.kts         ← namespace, SDK, NDK, all dependencies
-    ├── proguard-rules.pro       ← Keep LiteRT-LM + Vosk JNI classes
-    │
-    └── src/main/
-        ├── AndroidManifest.xml  ← Merged permissions, services, activities
-        │
-        ├── res/
-        │   ├── xml/genie_a11y_config.xml   ← A11y capabilities
-        │   └── values/
-        │       ├── strings.xml              ← App strings
-        │       └── themes.xml               ← Minimal translucent theme
-        │
-        └── java/com/akimy/genie/
-            │
-            ├── MainActivity.kt              ← One-time setup UI
-            │
-            ├── engine/                      ← The Brain
-            │   ├── DownloadConsts.kt        ← WorkManager data keys
-            │   ├── GenieModelConfig.kt      ← Model metadata + paths
-            │   ├── ModelDownloadWorker.kt    ← HTTP download with resume
-            │   ├── ModelDownloadManager.kt   ← WorkManager orchestration
-            │   ├── GenieEngine.kt           ← LiteRT-LM wrapper (Flow)
-            │   └── PromptFormatting.kt      ← Content/Message builders
-            │
-            ├── agent/                       ← The Mind
-            │   ├── AgentState.kt            ← State types & decisions
-            │   ├── SlidingWindowManager.kt  ← Context window + pruning
-            │   ├── PromptBuilder.kt         ← System prompt assembly
-            │   ├── Planner.kt              ← Skill cache + LLM + parse
-            │   └── AgentOrchestrator.kt     ← The Loop™
-            │
-            ├── service/                     ← The Hands & Eyes
-            │   ├── GenieAccessibilityService.kt  ← Central nervous system
-            │   ├── UINodeParser.kt               ← BFS tree traversal
-            │   ├── GestureDispatcher.kt          ← Touch/swipe/scroll
-            │   └── ScreenCapture.kt              ← Screenshot capture
-            │
-            ├── tools/                       ← The Toolbox
-            │   ├── GenieTool.kt             ← Tool interface
-            │   ├── ToolRegistry.kt          ← Name→implementation map
-            │   ├── HITLInterceptionWrapper.kt    ← Biometric gate
-            │   ├── BiometricAuthActivity.kt      ← Invisible auth activity
-            │   └── impl/
-            │       └── ToolImplementations.kt    ← All 11 tools
-            │
-            ├── data/                        ← The Memory
-            │   ├── UserFact.kt              ← Fact entity
-            │   ├── Skill.kt                 ← Skill entity
-            │   ├── FactDao.kt               ← Fact CRUD + upsert
-            │   ├── SkillDao.kt              ← Skill matching + ranking
-            │   └── GenieDatabase.kt         ← Room singleton
-            │
-            └── telemetry/                   ← The Nervous System
-                ├── EventLogger.kt           ← Async event bus
-                └── ErrorTaxonomy.kt         ← 4-tier error classification
+```mermaid
+mindmap
+    root((Genie))
+        Root
+            settings.gradle.kts
+            build.gradle.kts
+            gradle/libs.versions.toml
+        app/
+            build.gradle.kts
+            proguard-rules.pro
+            src/main/AndroidManifest.xml
+            res/
+                xml/genie_a11y_config.xml
+                values/strings.xml
+                values/themes.xml
+            java/com/akimy/genie/
+                MainActivity.kt
+                VisualizerCanvasActivity.kt
+                VisualizerBoardRenderer.kt
+                engine/
+                    GenieModelConfig.kt
+                    ModelDownloadManager.kt
+                    ModelDownloadWorker.kt
+                    GenieEngine.kt
+                    PromptFormatting.kt
+                agent/
+                    AgentState.kt
+                    PromptBuilder.kt
+                    Planner.kt
+                    PlannerToolSchema.kt
+                    BuiltInSkillMatcher.kt
+                    AgentOrchestrator.kt
+                service/
+                    GenieAccessibilityService.kt
+                    UINodeParser.kt
+                    GestureDispatcher.kt
+                    ScreenCapture.kt
+                    AccessibilityAwarenessTracker.kt
+                    AnnotationOverlayController.kt
+                tools/
+                    GenieTool.kt
+                    ToolRegistry.kt
+                    ToolImplementations.kt
+                    HITLInterceptionWrapper.kt
+                    RiskAssessor.kt
+                    BiometricAuthActivity.kt
+                    AnnotationSessionStore.kt
+                    VisualizerSceneStore.kt
+                    VisualizerLayoutEngine.kt
+                    VisualizerExportManager.kt
+                data/
+                    UserFact.kt
+                    Skill.kt
+                    VisualizerSceneEntity.kt
+                    FactDao.kt
+                    SkillDao.kt
+                    VisualizerSceneDao.kt
+                    GenieDatabase.kt
+                telemetry/
+                    EventLogger.kt
+                    ErrorTaxonomy.kt
 ```
 
 ---
 
 ## The End-to-End Flow (One Picture)
 
-```
-User says "Gemma"
-    │
-    ▼
-Vosk detects wake word → stops → starts SpeechRecognizer
-    │
-    ▼
-User says "Open Settings and turn on Wi-Fi"
-    │
-    ▼
-STT captures text → dispatches to AgentOrchestrator
-    │
-    ▼
-AgentOrchestrator.executeGoal()
-    │
-    ├── Check SkillLibrary → miss
-    │
-    └── LOOP:
-        ├── PromptBuilder assembles: goal + facts + history + tool list
-        ├── Planner sends to GenieEngine (LiteRT-LM via Flow)
-        ├── Model outputs: {"action":"act","tool":"open_app","args":{"name":"Settings"}}
-        ├── ToolRegistry validates → ClickTool
-        ├── HITL check: requiresAuth? → false → execute directly
-        ├── GenieAccessibilityService.openApp("Settings") → success
-        ├── History: [OK: Opened 'Settings']
-        ├── SlidingWindowManager prunes old errors
-        ├── ... (repeat for "click Network & internet", "click Wi-Fi")
-        └── Model outputs: {"action":"finish","summary":"Wi-Fi turned on"}
-            │
-            ├── TTS: "Wi-Fi has been turned on."
-            ├── SkillLibrary: writes 3-step plan for future reuse
-            ├── EventLogger: emits SkillWritten event
-            └── Resume Vosk wake-word listening
+```mermaid
+flowchart TD
+    A[Wake word: Gemma] --> B[Vosk detector pauses listener]
+    B --> C[SpeechRecognizer captures user goal]
+    C --> D[AgentOrchestrator.executeGoal]
+
+    D --> E{BuiltIn/Stored skill match?}
+    E -->|yes| F[Execute cached steps with safety checks]
+    E -->|no| G[Main planning loop]
+
+    G --> H[PromptBuilder assembles\ngoal + facts + history + tool schema]
+    H --> I[Planner calls GenieEngine]
+    I --> J[Model emits one tool call]
+    J --> K[ToolRegistry resolves implementation]
+    K --> L[RiskAssessor + optional HITL biometric]
+    L --> M[Tool executes in AccessibilityService]
+    M --> N[Append ToolOutcome to history]
+    N --> O{finish_task?}
+    O -->|no| G
+    O -->|yes| P[TTS summary]
+
+    F --> Q{cached replay succeeded?}
+    Q -->|no| G
+    Q -->|yes| P
+
+    P --> R[Persist skill/facts/scenes as needed]
+    R --> S[EventLogger emits lifecycle telemetry]
+    S --> T[Resume wake-word listening]
 ```
 
 That's Genie. An agent that listens, thinks, acts, learns, and protects — all running locally on your phone.

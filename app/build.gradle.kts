@@ -76,9 +76,6 @@ dependencies {
     // Biometric — HITL authentication
     implementation(libs.androidx.biometric)
 
-    // Security Crypto — Encrypted SharedPreferences for HF token
-    implementation(libs.androidx.security.crypto)
-
     // Serialization — JSON parsing for agent decisions
     implementation(libs.kotlinx.serialization.json)
 

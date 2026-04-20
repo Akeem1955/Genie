@@ -28,7 +28,6 @@ private var channelCreated = false
  * Key features borrowed from Gallery:
  * - Foreground service notification for long-running downloads
  * - Resume support via HTTP Range header + .genietmp partial files
- * - Bearer token authentication for HuggingFace gated models
  * - Progress reporting via WorkManager setProgress()
  *
  * Key changes from Gallery:
@@ -64,7 +63,6 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
         val fileName = inputData.getString(DownloadConsts.KEY_MODEL_DOWNLOAD_FILE_NAME)
         val modelDir = inputData.getString(DownloadConsts.KEY_MODEL_DOWNLOAD_MODEL_DIR) ?: ""
         val totalBytes = inputData.getLong(DownloadConsts.KEY_MODEL_TOTAL_BYTES, 0L)
-        val accessToken = inputData.getString(DownloadConsts.KEY_MODEL_DOWNLOAD_ACCESS_TOKEN)
 
         return withContext(Dispatchers.IO) {
             if (fileUrl == null || fileName == null) {
@@ -75,12 +73,6 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
 
                     val url = URL(fileUrl)
                     val connection = url.openConnection() as HttpURLConnection
-
-                    // HuggingFace Bearer token auth (from Gallery)
-                    if (accessToken != null) {
-                        Log.d(TAG, "Using access token: ${accessToken.take(10)}...")
-                        connection.setRequestProperty("Authorization", "Bearer $accessToken")
-                    }
 
                     // Prepare output directory (from Gallery)
                     val outputDir = File(
@@ -175,15 +167,26 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
                         }
                     }
 
+                    // Flush OS write buffer before closing to prevent silent data loss
+                    outputStream.flush()
                     outputStream.close()
                     inputStream.close()
 
-                    // Rename tmp file to final (from Gallery)
+                    // Atomic rename: tmp → final.
+                    // Only replace the final file if rename succeeds.
+                    // If rename fails (e.g. cross-partition), delete the tmp so the
+                    // next run starts a full fresh download instead of resuming
+                    // from a byte count that no longer matches a valid partial file.
                     val originalFile = File(
                         outputTmpFile.absolutePath.replace(".${DownloadConsts.TMP_FILE_EXT}", "")
                     )
                     if (originalFile.exists()) originalFile.delete()
-                    outputTmpFile.renameTo(originalFile)
+                    val renamed = outputTmpFile.renameTo(originalFile)
+                    if (!renamed) {
+                        outputTmpFile.delete() // Remove corrupt partial — force clean restart
+                        Log.e(TAG, "Rename failed, deleted tmp file to force clean retry")
+                        throw IOException("Failed to finalise download: rename returned false")
+                    }
                     Log.d(TAG, "Download complete: ${originalFile.absolutePath}")
 
                     Result.success()

@@ -4,68 +4,96 @@ import android.util.Log
 import com.akimy.genie.data.SkillDao
 import com.akimy.genie.engine.AgentResponse
 import com.akimy.genie.engine.GenieEngine
-import kotlinx.coroutines.flow.toList
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.ToolCall
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 
 private const val TAG = "GeniePlanner"
+
+interface GeniePlanner {
+    suspend fun findSkillMatch(goal: String): SkillMatch
+    suspend fun plan(
+        prompt: String,
+        imagePngBytes: List<ByteArray> = emptyList(),
+    ): PlanResult
+}
+
+sealed class SkillMatch {
+    data object None : SkillMatch()
+
+    sealed class Cached(open val steps: List<Decision.Act>) : SkillMatch()
+
+    data class BuiltIn(override val steps: List<Decision.Act>) : Cached(steps)
+
+    data class Stored(
+        val skillId: Int,
+        val goalPattern: String,
+        override val steps: List<Decision.Act>,
+    ) : Cached(steps)
+}
 
 /**
  * The Planner node in the agent graph.
  *
  * 1. First checks the SkillLibrary for a pre-compiled plan match
  * 2. If no match, sends the assembled prompt to GenieEngine
- * 3. Parses the streamed response into a Decision (Act or Finish)
+ * 3. Parses the returned tool call into an orchestrator Decision
  */
 class Planner(
     private val engine: GenieEngine,
     private val skillDao: SkillDao? = null,
-) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-    }
+) : GeniePlanner {
 
-    /**
-     * Attempt to match the goal against the SkillLibrary.
-     *
-     * @param goal The user's goal text
-     * @return A pre-compiled Decision.Act list, or null if no match
-     */
-    suspend fun findSkillMatch(goal: String): List<Decision.Act>? {
-        if (skillDao == null) return null
+    override suspend fun findSkillMatch(goal: String): SkillMatch {
+        val builtIn = BuiltInSkillMatcher.match(goal)
+        if (builtIn != null) {
+            Log.d(TAG, "Matched built-in skill for goal: '$goal'")
+            return SkillMatch.BuiltIn(builtIn)
+        }
+
+        if (skillDao == null) return SkillMatch.None
 
         val skills = skillDao.findMatchingSkills(goal)
-        if (skills.isEmpty()) return null
+        if (skills.isEmpty()) return SkillMatch.None
 
-        // Use the skill with the highest success count
-        val bestSkill = skills.maxByOrNull { it.successCount } ?: return null
-
+        val bestSkill = skills.maxByOrNull { it.successCount } ?: return SkillMatch.None
         return try {
-            Log.d(TAG, "Found skill match: '${bestSkill.goalPattern}' (${bestSkill.successCount} successes)")
-            json.decodeFromString<List<Decision.Act>>(bestSkill.planJson)
+            Log.d(
+                TAG,
+                "Found skill match: '${bestSkill.goalPattern}' (${bestSkill.successCount} successes)"
+            )
+            SkillMatch.Stored(
+                skillId = bestSkill.id,
+                goalPattern = bestSkill.goalPattern,
+                steps = Json.decodeFromString<List<Decision.Act>>(bestSkill.planJson),
+            )
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse skill plan: ${e.message}")
-            null
+            SkillMatch.None
         }
     }
 
-    /**
-     * Send the prompt to the LLM and parse the Decision from the response.
-     *
-     * @param prompt The full prompt from PromptBuilder
-     * @return The parsed Decision, or null if parsing failed
-     */
-    suspend fun plan(prompt: String): PlanResult {
+    override suspend fun plan(
+        prompt: String,
+        imagePngBytes: List<ByteArray>,
+    ): PlanResult {
         val responseChunks = mutableListOf<AgentResponse>()
         val fullText = StringBuilder()
+        var toolCallMessage: Message? = null
 
-        engine.sendAgentMessage(prompt).collect { response ->
+        engine.sendAgentMessage(prompt, imagePngBytes).collect { response ->
             responseChunks.add(response)
             when (response) {
                 is AgentResponse.Token -> fullText.append(response.text)
-                is AgentResponse.Done -> { /* handled below */ }
+                is AgentResponse.Done -> Unit
                 is AgentResponse.ToolCallRequest -> {
                     Log.d(TAG, "Got tool call request from engine")
+                    toolCallMessage = response.message
                 }
                 is AgentResponse.Error -> {
                     Log.e(TAG, "Engine error during planning: ${response.error}")
@@ -73,82 +101,99 @@ class Planner(
             }
         }
 
-        // Check for errors first
         val errorResponse = responseChunks.filterIsInstance<AgentResponse.Error>().firstOrNull()
         if (errorResponse != null) {
             return PlanResult.Error(errorResponse.error.toString())
         }
 
-        // Parse the model's JSON output into a Decision
+        toolCallMessage?.let { return parseDecision(it) }
         return parseDecision(fullText.toString().trim())
     }
 
+    internal fun parseDecision(message: Message): PlanResult {
+        if (message.toolCalls.isEmpty()) {
+            return PlanResult.ParseError("No tool call found in model response")
+        }
+
+        if (message.toolCalls.size > 1) {
+            return PlanResult.ParseError(
+                "Expected exactly one tool call per turn, got ${message.toolCalls.size}"
+            )
+        }
+
+        return parseDecision(message.toolCalls.single())
+    }
+
+    internal fun parseDecision(toolCall: ToolCall): PlanResult {
+        if (toolCall.name == "finish_task") {
+            val summary = toolCall.arguments["summary"]
+                ?.toString()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: return PlanResult.ParseError("finish_task requires a non-empty 'summary'")
+            return PlanResult.Success(Decision.Finish(summary))
+        }
+
+        val args = toolCall.arguments.entries.associate { (key, value) ->
+            key to stringifyArgument(value)
+        }
+        return PlanResult.Success(Decision.Act(tool = toolCall.name, args = args))
+    }
+
     /**
-     * Parse the model's raw text output into a Decision.
-     * Handles common LLM output quirks (markdown fences, extra text around JSON).
+     * Plain text is invalid in native planner mode. The model must call one tool per turn.
      */
     internal fun parseDecision(rawText: String): PlanResult {
-        // Strip markdown code fences if present
-        var jsonText = rawText
-            .replace("```json", "")
-            .replace("```", "")
-            .trim()
-
-        // Try to extract JSON object from the text
-        val jsonStart = jsonText.indexOf('{')
-        val jsonEnd = jsonText.lastIndexOf('}')
-        if (jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart) {
-            Log.w(TAG, "No JSON found in model output: $rawText")
-            return PlanResult.ParseError("No valid JSON in model output")
+        if (rawText.isBlank()) {
+            return PlanResult.ParseError("Model returned neither tool calls nor text")
         }
-        jsonText = jsonText.substring(jsonStart, jsonEnd + 1)
 
-        return try {
-            // Parse the action field to determine Decision type
-            val jsonElement = json.parseToJsonElement(jsonText)
-            val jsonObject = jsonElement as? kotlinx.serialization.json.JsonObject
-                ?: return PlanResult.ParseError("Expected JSON object")
+        val excerpt = rawText.take(120)
+        Log.w(TAG, "Plain text returned in native tool-calling mode: $excerpt")
+        return PlanResult.ParseError(
+            "Model returned plain text instead of a tool call. Use a tool call or finish_task."
+        )
+    }
 
-            val action = jsonObject["action"]?.let {
-                (it as? kotlinx.serialization.json.JsonPrimitive)?.content
-            }
+    private fun stringifyArgument(value: Any?): String {
+        return when (value) {
+            null -> ""
+            is String -> value
+            is Number, is Boolean -> value.toString()
+            is Map<*, *>, is List<*>, is Array<*> -> anyToJson(value).toString()
+            else -> value.toString()
+        }
+    }
 
-            when (action) {
-                "act" -> {
-                    val tool = jsonObject["tool"]?.let {
-                        (it as? kotlinx.serialization.json.JsonPrimitive)?.content
-                    } ?: return PlanResult.ParseError("Missing 'tool' field in act decision")
-
-                    val argsElement = jsonObject["args"] as? kotlinx.serialization.json.JsonObject
-                    val args = argsElement?.entries?.associate { (k, v) ->
-                        k to (v as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
-                    } ?: emptyMap()
-
-                    PlanResult.Success(Decision.Act(tool = tool, args = args))
-                }
-
-                "finish" -> {
-                    val summary = jsonObject["summary"]?.let {
-                        (it as? kotlinx.serialization.json.JsonPrimitive)?.content
-                    } ?: "Goal completed"
-
-                    PlanResult.Success(Decision.Finish(summary = summary))
-                }
-
-                else -> {
-                    PlanResult.ParseError("Unknown action type: '$action'")
+    private fun anyToJson(value: Any?): JsonElement {
+        return when (value) {
+            null -> JsonNull
+            is String -> JsonPrimitive(value)
+            is Boolean -> JsonPrimitive(value)
+            is Byte -> JsonPrimitive(value)
+            is Short -> JsonPrimitive(value)
+            is Int -> JsonPrimitive(value)
+            is Long -> JsonPrimitive(value)
+            is Float -> JsonPrimitive(value)
+            is Double -> JsonPrimitive(value)
+            is Map<*, *> -> buildJsonObject {
+                value.forEach { (key, nestedValue) ->
+                    if (key != null) {
+                        put(key.toString(), anyToJson(nestedValue))
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "JSON parse error: ${e.message}")
-            PlanResult.ParseError("JSON parse error: ${e.message}")
+            is List<*> -> buildJsonArray {
+                value.forEach { add(anyToJson(it)) }
+            }
+            is Array<*> -> buildJsonArray {
+                value.forEach { add(anyToJson(it)) }
+            }
+            else -> JsonPrimitive(value.toString())
         }
     }
 }
 
-/**
- * Result of a planning attempt.
- */
 sealed class PlanResult {
     data class Success(val decision: Decision) : PlanResult()
     data class ParseError(val message: String) : PlanResult()

@@ -13,10 +13,10 @@ import java.io.File
  *   {getExternalFilesDir()}/{normalizedName}/{version}/{fileName}
  */
 data class GenieModelConfig(
-    /** HuggingFace model repository ID (e.g., "litert-community/Gemma4-2B-IT-4b") */
+    /** Model identifier (e.g., "genie/gemma-4-E4B-it") */
     val modelId: String,
 
-    /** The model file name on HuggingFace */
+    /** The model file name */
     val modelFile: String,
 
     /** Git commit hash (version pinning) */
@@ -28,16 +28,15 @@ data class GenieModelConfig(
     /** Human-readable display name */
     val displayName: String,
 
-    /** Optional custom download URL (overrides HF-constructed URL) */
-    val customUrl: String? = null,
+    /** S3 download URL for the model file */
+    val customUrl: String,
 ) {
     /** Normalized name for filesystem path (replace non-alphanumeric with underscores) */
     val normalizedName: String = Regex("[^a-zA-Z0-9]").replace(modelId, "_")
 
-    /** Construct the full HuggingFace download URL */
+    /** Construct the download URL. Genie is S3-only for model distribution. */
     val downloadUrl: String
         get() = customUrl
-            ?: "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
 
     /**
      * Get the local file path where the model is stored.
@@ -66,18 +65,33 @@ data class GenieModelConfig(
     }
 
     companion object {
+        private const val S3_BASE =
+            "https://simiebot-video-assets-072531718183-us-east-1-an.s3.us-east-1.amazonaws.com/Genie/"
+
         /**
-         * Default Gemma 4 2B 4-bit quantized model configuration.
-         *
-         * NOTE: Update modelId, commitHash, and sizeInBytes once the official
-         * Gemma 4 .litertlm package is published to HuggingFace.
+         * Default: Gemma 4 — Effective 4-Bit quantized.
+         * Hosted on private S3 bucket (no HF token required).
          */
         val DEFAULT = GenieModelConfig(
-            modelId = "litert-community/Gemma4-2B-IT-4b",
-            modelFile = "gemma4-2b-it-4b.litertlm",
-            commitHash = "main",
-            sizeInBytes = 1_500_000_000L, // ~1.5 GB estimated for 4-bit 2B model
-            displayName = "Gemma 4 2B (4-bit)",
+            modelId = "genie/gemma-4-E4B-it",
+            modelFile = "gemma-4-E4B-it.litertlm",
+            commitHash = "v1",
+            sizeInBytes = 1_500_000_000L, // ~1.5 GB estimated
+            displayName = "Gemma 4 (E4B)",
+            customUrl = "${S3_BASE}gemma-4-E4B-it.litertlm",
+        )
+
+        /**
+         * Alternative: Gemma 4 — Effective 2-Bit quantized (lighter).
+         * Smaller on-device footprint, slightly lower quality.
+         */
+        val E2B = GenieModelConfig(
+            modelId = "genie/gemma-4-E2B-it",
+            modelFile = "gemma-4-E2B-it.litertlm",
+            commitHash = "v1",
+            sizeInBytes = 900_000_000L, // ~900 MB estimated
+            displayName = "Gemma 4 (E2B)",
+            customUrl = "${S3_BASE}gemma-4-E2B-it.litertlm",
         )
     }
 }

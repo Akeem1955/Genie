@@ -204,11 +204,16 @@ class GenieEngine {
     }
 
     /**
-     * Send a text message and stream the response.
-     * Convenience wrapper around sendMessageAsync(Contents).
+     * Send a user message and stream the response.
+     *
+     * @param text prompt text for the planner
+     * @param imagePngBytes optional screenshot PNG bytes for multimodal turns
      */
-    fun sendAgentMessage(text: String): Flow<AgentResponse> {
-        return sendMessageAsync(PromptFormatting.buildUserContents(text))
+    fun sendAgentMessage(
+        text: String,
+        imagePngBytes: List<ByteArray> = emptyList(),
+    ): Flow<AgentResponse> {
+        return sendMessageAsync(PromptFormatting.buildUserContents(text, imagePngBytes))
     }
 
     /**

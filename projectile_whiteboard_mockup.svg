@@ -1,0 +1,112 @@
+<svg width="1200" height="1800" viewBox="0 0 1200 1800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eef7ff"/>
+      <stop offset="100%" stop-color="#dfefff"/>
+    </linearGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f7fbff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#4b6a88" flood-opacity="0.18"/>
+    </filter>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#e6edf5" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2364aa"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="1800" fill="url(#bg)"/>
+
+  <rect x="140" y="70" width="920" height="1660" rx="44" fill="#0e2035" opacity="0.12"/>
+  <rect x="120" y="50" width="920" height="1660" rx="44" fill="#fbfdff" stroke="#b9cde3" stroke-width="3" filter="url(#shadow)"/>
+
+  <rect x="160" y="92" width="840" height="84" rx="22" fill="#143a63"/>
+  <text x="194" y="145" font-family="Segoe UI, Arial" font-size="34" font-weight="700" fill="#ffffff">Genie Whiteboard Tutor</text>
+  <text x="826" y="145" font-family="Segoe UI, Arial" font-size="24" fill="#b8d8f8">Projectile Motion</text>
+
+  <rect x="160" y="198" width="840" height="120" rx="18" fill="#f2f8ff" stroke="#d4e4f4"/>
+  <rect x="184" y="222" width="210" height="72" rx="12" fill="#d8edff"/>
+  <text x="200" y="250" font-family="Segoe UI, Arial" font-size="22" fill="#1f4f83">Given:</text>
+  <text x="200" y="278" font-family="Segoe UI, Arial" font-size="20" fill="#1f4f83">v0 = 20 m/s, theta = 45 deg</text>
+
+  <rect x="410" y="222" width="250" height="72" rx="12" fill="#fff4cf"/>
+  <text x="426" y="250" font-family="Segoe UI, Arial" font-size="22" fill="#7b5a00">Find:</text>
+  <text x="426" y="278" font-family="Segoe UI, Arial" font-size="20" fill="#7b5a00">Range, Max Height, Time</text>
+
+  <rect x="676" y="222" width="300" height="72" rx="12" fill="#dbf7e6"/>
+  <text x="692" y="250" font-family="Segoe UI, Arial" font-size="22" fill="#16623f">Mode:</text>
+  <text x="692" y="278" font-family="Segoe UI, Arial" font-size="20" fill="#16623f">Explain + Solve + Quiz</text>
+
+  <rect x="160" y="338" width="840" height="860" rx="22" fill="url(#board)" stroke="#cfddea" stroke-width="2"/>
+  <rect x="182" y="360" width="796" height="816" rx="16" fill="url(#grid)"/>
+
+  <line x1="230" y1="1060" x2="930" y2="1060" stroke="#7c9bb8" stroke-width="3"/>
+  <line x1="230" y1="1060" x2="230" y2="520" stroke="#7c9bb8" stroke-width="3"/>
+  <text x="940" y="1068" font-family="Segoe UI, Arial" font-size="18" fill="#5b7590">x</text>
+  <text x="218" y="508" font-family="Segoe UI, Arial" font-size="18" fill="#5b7590">y</text>
+
+  <path d="M 230 1060 Q 520 560 850 1060" fill="none" stroke="#2364aa" stroke-width="7"/>
+
+  <circle cx="230" cy="1060" r="9" fill="#2364aa"/>
+  <circle cx="520" cy="560" r="10" fill="#ff7b00"/>
+  <circle cx="850" cy="1060" r="9" fill="#2364aa"/>
+
+  <text x="188" y="1095" font-family="Segoe UI, Arial" font-size="18" fill="#2f4d6a">Launch</text>
+  <text x="492" y="534" font-family="Segoe UI, Arial" font-size="18" fill="#8a4d00">Peak</text>
+  <text x="820" y="1095" font-family="Segoe UI, Arial" font-size="18" fill="#2f4d6a">Landing</text>
+
+  <line x1="236" y1="1048" x2="350" y2="920" stroke="#2364aa" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="356" y="915" font-family="Segoe UI, Arial" font-size="18" fill="#1f4f83">v0</text>
+
+  <path d="M 258 1045 A 56 56 0 0 1 308 995" fill="none" stroke="#f59e0b" stroke-width="3"/>
+  <text x="314" y="1000" font-family="Segoe UI, Arial" font-size="18" fill="#a86700">theta</text>
+
+  <rect x="700" y="396" width="250" height="166" rx="16" fill="#ffffff" stroke="#d8e5f1"/>
+  <text x="718" y="430" font-family="Segoe UI, Arial" font-size="21" font-weight="700" fill="#274b6d">Key Equations</text>
+  <text x="718" y="464" font-family="Consolas, monospace" font-size="20" fill="#2f4d6a">R = v0^2 sin(2theta) / g</text>
+  <text x="718" y="497" font-family="Consolas, monospace" font-size="20" fill="#2f4d6a">H = v0^2 sin^2(theta) / 2g</text>
+  <text x="718" y="530" font-family="Consolas, monospace" font-size="20" fill="#2f4d6a">T = 2v0 sin(theta) / g</text>
+
+  <rect x="706" y="585" width="244" height="148" rx="16" fill="#fff7df" stroke="#e7d8a8"/>
+  <text x="724" y="618" font-family="Segoe UI, Arial" font-size="21" font-weight="700" fill="#7a5b00">Live Solve</text>
+  <text x="724" y="652" font-family="Segoe UI, Arial" font-size="19" fill="#7a5b00">Range   R = 40.8 m</text>
+  <text x="724" y="682" font-family="Segoe UI, Arial" font-size="19" fill="#7a5b00">Height  H = 10.2 m</text>
+  <text x="724" y="712" font-family="Segoe UI, Arial" font-size="19" fill="#7a5b00">Time    T = 2.88 s</text>
+
+  <rect x="160" y="1220" width="840" height="220" rx="20" fill="#ffffff" stroke="#d5e3f0"/>
+  <text x="186" y="1262" font-family="Segoe UI, Arial" font-size="26" font-weight="700" fill="#264767">Step-by-Step Tutor</text>
+
+  <rect x="186" y="1280" width="250" height="136" rx="14" fill="#edf6ff"/>
+  <text x="202" y="1310" font-family="Segoe UI, Arial" font-size="20" font-weight="700" fill="#1f4f83">1. Resolve Velocity</text>
+  <text x="202" y="1342" font-family="Segoe UI, Arial" font-size="18" fill="#1f4f83">vx = v0 cos(theta)</text>
+  <text x="202" y="1368" font-family="Segoe UI, Arial" font-size="18" fill="#1f4f83">vy = v0 sin(theta)</text>
+
+  <rect x="454" y="1280" width="250" height="136" rx="14" fill="#fff7df"/>
+  <text x="470" y="1310" font-family="Segoe UI, Arial" font-size="20" font-weight="700" fill="#7b5a00">2. Apply Formula</text>
+  <text x="470" y="1342" font-family="Segoe UI, Arial" font-size="18" fill="#7b5a00">Pick R, H, or T</text>
+  <text x="470" y="1368" font-family="Segoe UI, Arial" font-size="18" fill="#7b5a00">Substitute values</text>
+
+  <rect x="722" y="1280" width="250" height="136" rx="14" fill="#e8f8ef"/>
+  <text x="738" y="1310" font-family="Segoe UI, Arial" font-size="20" font-weight="700" fill="#16623f">3. Interpret</text>
+  <text x="738" y="1342" font-family="Segoe UI, Arial" font-size="18" fill="#16623f">What does angle change?</text>
+  <text x="738" y="1368" font-family="Segoe UI, Arial" font-size="18" fill="#16623f">Compare trajectories</text>
+
+  <rect x="160" y="1460" width="840" height="236" rx="20" fill="#f8fbff" stroke="#d5e3f0"/>
+  <text x="186" y="1500" font-family="Segoe UI, Arial" font-size="24" font-weight="700" fill="#264767">Quick Check (Tutor asks)</text>
+
+  <rect x="186" y="1522" width="786" height="58" rx="12" fill="#ffffff" stroke="#d5e3f0"/>
+  <text x="204" y="1558" font-family="Segoe UI, Arial" font-size="20" fill="#2f4d6a">If theta changes from 45 deg to 60 deg, what happens to range?</text>
+
+  <rect x="186" y="1594" width="250" height="78" rx="12" fill="#e8f8ef" stroke="#b6e5c8"/>
+  <text x="236" y="1642" font-family="Segoe UI, Arial" font-size="21" font-weight="700" fill="#16623f">A. Increases</text>
+
+  <rect x="454" y="1594" width="250" height="78" rx="12" fill="#fff" stroke="#d5e3f0"/>
+  <text x="500" y="1642" font-family="Segoe UI, Arial" font-size="21" font-weight="700" fill="#2f4d6a">B. Same</text>
+
+  <rect x="722" y="1594" width="250" height="78" rx="12" fill="#fff" stroke="#d5e3f0"/>
+  <text x="758" y="1642" font-family="Segoe UI, Arial" font-size="21" font-weight="700" fill="#2f4d6a">C. Decreases</text>
+</svg>

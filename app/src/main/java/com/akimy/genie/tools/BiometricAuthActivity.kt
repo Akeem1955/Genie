@@ -32,19 +32,21 @@ class BiometricAuthActivity : FragmentActivity() {
 
     companion object {
         const val EXTRA_TOOL_NAME = "extra_tool_name"
+        const val EXTRA_REASON = "extra_reason"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val toolName = intent.getStringExtra(EXTRA_TOOL_NAME) ?: "unknown"
-        Log.d(TAG, "BiometricAuth launched for tool: $toolName")
+        val reason = intent.getStringExtra(EXTRA_REASON) ?: ""
+        Log.d(TAG, "BiometricAuth launched for tool: $toolName (reason: $reason)")
 
         // Check if biometric auth is available
         val biometricManager = BiometricManager.from(this)
         when (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
             BiometricManager.BIOMETRIC_SUCCESS -> {
-                showBiometricPrompt(toolName)
+                showBiometricPrompt(toolName, reason)
             }
 
             BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
@@ -61,7 +63,7 @@ class BiometricAuthActivity : FragmentActivity() {
         }
     }
 
-    private fun showBiometricPrompt(toolName: String) {
+    private fun showBiometricPrompt(toolName: String, reason: String) {
         val executor = ContextCompat.getMainExecutor(this)
 
         val callback = object : BiometricPrompt.AuthenticationCallback() {
@@ -87,7 +89,7 @@ class BiometricAuthActivity : FragmentActivity() {
         val biometricPrompt = BiometricPrompt(this, executor, callback)
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(getString(R.string.biometric_title))
-            .setSubtitle("Authorize: $toolName")
+            .setSubtitle(if (reason.isNotBlank()) "$toolName — $reason" else "Authorize: $toolName")
             .setNegativeButtonText(getString(R.string.biometric_cancel))
             .build()
 

@@ -13,14 +13,15 @@ import androidx.room.RoomDatabase
  * - skills: Pre-compiled agent plans for self-evolution
  */
 @Database(
-    entities = [UserFact::class, Skill::class],
-    version = 1,
+    entities = [UserFact::class, Skill::class, VisualizerSceneEntity::class],
+    version = 2,
     exportSchema = false,
 )
 abstract class GenieDatabase : RoomDatabase() {
 
     abstract fun factDao(): FactDao
     abstract fun skillDao(): SkillDao
+    abstract fun visualizerSceneDao(): VisualizerSceneDao
 
     companion object {
         @Volatile

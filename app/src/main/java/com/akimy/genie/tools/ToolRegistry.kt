@@ -27,8 +27,50 @@ class ToolRegistry {
         register(OpenAppTool())
         register(GoBackTool())
         register(GoHomeTool())
+        register(ReadFocusedTool())
+        register(FocusNextTool())
+        register(FocusPreviousTool())
+        register(FocusFirstTool())
+        register(FocusByTextTool())
+        register(FocusByRoleTool())
+        register(ActivateFocusedTool())
+        register(ScrollForwardTool())
+        register(ScrollBackwardTool())
+        register(ReadScreenSummaryTool())
+        register(ReadRecentEventsTool())
+        register(WhereAmITool())
+        register(ReadNearbyContextTool())
+        register(WhatCanIDoHereTool())
+        register(ReadScreenChangesTool())
+        register(EnableContinuousReaderTool())
+        register(DisableContinuousReaderTool())
+        register(ReadContinuousReaderStatusTool())
+        register(RepeatLastNarrationTool())
+        register(ReadScreenMapTool())
+        register(SaveScreenHintTool())
+        register(ReadDialogTool())
+        register(ReadNotificationsTool())
+        register(ReadFormStateTool())
         register(SaveFactTool())
         register(RetrieveFactTool())
+        register(ReadPdfPageRangeTool())
+        register(VisualizeConceptTool())
+        register(TeachWithBoardTool())
+        register(BoardAddObjectTool())
+        register(BoardUpdateObjectTool())
+        register(BoardRemoveObjectTool())
+        register(BoardFocusObjectTool())
+        register(BoardRevealStepTool())
+        register(BoardNextStepTool())
+        register(BoardPrevStepTool())
+        register(BoardReplayStepTool())
+        register(BoardSetNarrationTool())
+        register(AnnotateSceneTool())
+        register(AnnotationAddBoxTool())
+        register(AnnotationAddLabelTool())
+        register(AnnotationAddPointerTool())
+        register(AnnotationClearTool())
+        register(AnnotationReplayTool())
     }
 
     /**
@@ -78,9 +120,4 @@ class ToolRegistry {
      * Get all registered tools.
      */
     fun getAllTools(): Collection<GenieTool> = tools.values
-
-    /**
-     * Check if a tool requires HITL auth.
-     */
-    fun requiresAuth(name: String): Boolean = tools[name]?.requiresAuth ?: false
 }

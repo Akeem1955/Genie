@@ -13,11 +13,25 @@ import com.google.ai.edge.litertlm.Message
 object PromptFormatting {
 
     /**
-     * Build a user message with text content.
-     * Wraps Content.Text() into Contents for sendMessageAsync().
+     * Build a user message with optional image context.
+     *
+     * Image bytes (PNG) are prepended so the text prompt can reference
+     * the visual context in the same turn.
      */
-    fun buildUserContents(text: String): Contents {
-        return Contents.of(Content.Text(text))
+    fun buildUserContents(
+        text: String,
+        imagePngBytes: List<ByteArray> = emptyList(),
+    ): Contents {
+        if (imagePngBytes.isEmpty()) {
+            return Contents.of(Content.Text(text))
+        }
+
+        val parts = mutableListOf<Content>()
+        imagePngBytes.forEach { parts.add(Content.ImageBytes(it)) }
+        if (text.isNotBlank()) {
+            parts.add(Content.Text(text))
+        }
+        return Contents.of(parts)
     }
 
     /**

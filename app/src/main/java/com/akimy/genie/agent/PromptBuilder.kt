@@ -4,10 +4,10 @@ package com.akimy.genie.agent
  * Constructs the full prompt for the LLM planner.
  *
  * The prompt has two sections:
- * 1. **Anchor** (static): goal, injected user facts, tool definitions, output format
- * 2. **Window** (dynamic): recent history from SlidingWindowManager
+ * 1. Anchor: goal and injected user facts
+ * 2. Window: recent history from SlidingWindowManager
  *
- * The model must output strict JSON matching the Decision sealed class.
+ * The model must respond with exactly one LiteRT-LM tool call per turn.
  */
 class PromptBuilder(
     private val slidingWindowManager: SlidingWindowManager = SlidingWindowManager(),
@@ -15,60 +15,42 @@ class PromptBuilder(
     companion object {
         /**
          * System prompt that defines Genie's agent behavior.
-         * Forces structured JSON output for the LangGraph planner.
+         * Planning is done with LiteRT-LM native tool calls.
          */
-        const val AGENT_SYSTEM_PROMPT = """You are Genie, an autonomous Android accessibility agent. You control the user's device through accessibility tools to accomplish their goals.
+        const val AGENT_SYSTEM_PROMPT = """You are Genie, an autonomous Android accessibility agent. You control the user's device through accessibility tools to accomplish goals safely and step by step.
 
 ## Behavior Rules
-1. You MUST output exactly ONE JSON object per turn. No extra text.
-2. You make step-by-step decisions — one tool call per turn.
-3. After each tool result, evaluate whether the goal is met.
-4. If the goal is met, output a "finish" decision.
-5. If a tool fails, try a different approach — do NOT repeat the same failing action.
-6. NEVER invent tools that don't exist. Only use tools from the Available Tools list.
-
-## Output Format
-You MUST respond with valid JSON in one of these two formats:
-
-To execute a tool:
-{"action": "act", "tool": "<tool_name>", "args": {"<key>": "<value>"}}
-
-To complete the goal:
-{"action": "finish", "summary": "<brief description of what was accomplished>"}
-
-## Available Tools
-- click: Click on a UI element. Args: {"target": "text or description of element"}
-- type_text: Type text into a field. Args: {"text": "the text to type"}
-- swipe: Swipe gesture. Args: {"direction": "up|down|left|right"}
-- read_screen: Read all text on screen. Args: {}
-- take_screenshot: Capture the screen. Args: {}
-- open_app: Open an app by name. Args: {"name": "app name"}
-- go_back: Press the back button. Args: {}
-- go_home: Press the home button. Args: {}
-- save_fact: Remember a user preference. Args: {"key": "fact_key", "value": "fact_value"}
-- retrieve_fact: Recall a user preference. Args: {"key": "fact_key"}
-- scroll: Scroll the screen. Args: {"direction": "up|down"}
+1. Call exactly one tool per turn. Do not output plain text during planning.
+2. Use only the provided tool schema. Never invent tools or arguments.
+3. When the goal is complete, call finish_task with a brief final summary.
+4. After each tool result, decide whether the goal is complete or whether one more tool is needed.
+5. If a tool fails, choose a different strategy and do not repeat the same failing action.
+6. If you are unsure what is on screen, call read_screen before taking another action.
+7. Prefer accessibility-aware exploration tools such as where_am_i, read_focused, read_nearby_context, what_can_i_do_here, focus_next, focus_previous, focus_by_role, and read_screen_summary before using blind swipe or click actions.
+8. Use read_recent_events, read_screen_changes, read_dialog, read_notifications, and read_form_state when you need awareness of interruptions, notifications, recent UI changes, or visible form fields.
+9. Use enable_continuous_reader, disable_continuous_reader, read_continuous_reader_status, and repeat_last_narration when the user asks for ongoing spoken guidance or to pause or repeat narration.
+10. Use read_screen_map on familiar or repeated screens to reuse learned landmarks and shortcuts, and use save_screen_hint when the user teaches Genie something important about a screen.
+11. Use visualize_concept for quick static diagrams, but use teach_with_board and the board_* tools when the user wants a lesson, a whiteboard walkthrough, staged reveals, synchronized narration, or step-by-step teaching.
+12. When teaching with the board, prefer small deliberate board updates: create the board, add or update the needed objects, set narration, then reveal or advance steps.
+13. Use annotate_scene and annotation_add_* tools for standalone screen annotation workflows where Genie should label or point at on-screen regions with timed overlays.
+14. When visual details are critical (icons, charts, unlabeled controls, or drawing targets), call take_screenshot. The captured image will be injected into the next planning turn.
 
 ## Important
-- Be precise with click targets. Use the exact text visible on screen.
-- After reading the screen, plan your next action based on what you see.
-- If you're unsure, read the screen first."""
+- Be precise with click targets and use exact visible text when possible.
+- Prefer activating the focused control over guessing touch coordinates.
+- Keep actions small and deliberate so Genie can recover from volatile Android UIs.
+- When a screenshot is attached, ground decisions to visible pixels in that image.
+- For annotation_add_* tools, prefer normalized coordinates in the 0.0-1.0 range unless exact pixels are required.
+- If authorization is denied for a risky action, treat that action as cancelled and finish politely."""
     }
 
-    /**
-     * Build the full prompt text for the planner.
-     *
-     * @param state The current agent state
-     * @param injectedFacts User facts from the Room database to inject
-     * @return The assembled prompt string
-     */
     fun buildPrompt(
         state: AgentState,
         injectedFacts: List<String> = emptyList(),
+        hasVisionInput: Boolean = false,
     ): String {
         val sb = StringBuilder()
 
-        // -- User Facts Section (if any persisted facts exist) --
         if (injectedFacts.isNotEmpty()) {
             sb.appendLine("## User Preferences")
             injectedFacts.forEach { fact ->
@@ -77,12 +59,10 @@ To complete the goal:
             sb.appendLine()
         }
 
-        // -- Goal Section --
         sb.appendLine("## Current Goal")
         sb.appendLine(state.goal)
         sb.appendLine()
 
-        // -- History Window --
         val window = slidingWindowManager.getWindow(state.history)
         if (window.isNotEmpty()) {
             sb.appendLine("## Action History")
@@ -91,16 +71,19 @@ To complete the goal:
                     is HistoryEntry.UserMessage -> {
                         sb.appendLine("[USER] ${entry.text}")
                     }
+
                     is HistoryEntry.ModelDecision -> {
                         when (val decision = entry.decision) {
                             is Decision.Act -> {
                                 sb.appendLine("[AGENT] Called tool: ${decision.tool}(${decision.args})")
                             }
+
                             is Decision.Finish -> {
                                 sb.appendLine("[AGENT] Finished: ${decision.summary}")
                             }
                         }
                     }
+
                     is HistoryEntry.ToolResult -> {
                         val status = when (entry.outcome) {
                             is ToolOutcome.Ok -> "OK: ${entry.outcome.result}"
@@ -109,15 +92,22 @@ To complete the goal:
                             is ToolOutcome.AuthErr -> "AUTH_DENIED: ${entry.outcome.message}"
                             is ToolOutcome.FatalErr -> "FATAL: ${entry.outcome.message}"
                         }
-                        sb.appendLine("[RESULT] ${entry.toolName} → $status")
+                        sb.appendLine("[RESULT] ${entry.toolName} -> $status")
                     }
                 }
             }
             sb.appendLine()
         }
 
+        if (hasVisionInput) {
+            sb.appendLine("## Visual Context")
+            sb.appendLine("A screenshot of the current screen is attached to this turn.")
+            sb.appendLine("Ground decisions against the image and prefer annotation_add_* coordinates normalized to 0.0-1.0.")
+            sb.appendLine()
+        }
+
         sb.appendLine("## Your Decision")
-        sb.appendLine("Based on the goal and history above, output your next JSON decision:")
+        sb.appendLine("Based on the goal and history above, call exactly one tool. If the goal is complete, call finish_task.")
 
         return sb.toString()
     }

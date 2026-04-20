@@ -21,16 +21,18 @@ sealed class AuthResult {
 /**
  * Human-in-the-Loop interception wrapper.
  *
- * When a tool has requiresAuth = true, this wrapper intercepts the execution
- * and triggers a BiometricPrompt via a transparent FragmentActivity.
+ * Called by [com.akimy.genie.agent.AgentOrchestrator] when [RiskAssessor] determines
+ * that a tool call requires biometric authorization. The decision to call this wrapper
+ * is made dynamically based on screen context, not statically per tool.
  *
  * Flow:
- * 1. Agent decides to execute an auth-required tool
- * 2. HITLWrapper fires Intent to BiometricAuthActivity
- * 3. BiometricAuthActivity shows BiometricPrompt overlay
- * 4. Result (Approved/Denied/Timeout) is sent back via in-process Channel
- * 5. If Approved → tool executes normally
- * 6. If Denied/Timeout → ToolOutcome.AuthErr is returned
+ * 1. RiskAssessor returns RequireBiometric for a tool call
+ * 2. Orchestrator calls HITLWrapper.executeWithAuth()
+ * 3. HITLWrapper fires Intent to BiometricAuthActivity
+ * 4. BiometricAuthActivity shows BiometricPrompt overlay
+ * 5. Result (Approved/Denied/Timeout) is sent back via in-process Channel
+ * 6. If Approved → tool executes normally
+ * 7. If Denied/Timeout → ToolOutcome.AuthErr is returned
  */
 object HITLInterceptionWrapper {
 
@@ -40,10 +42,14 @@ object HITLInterceptionWrapper {
     /**
      * Wrap a tool execution with HITL biometric authentication.
      *
+     * This method always triggers biometric auth — the caller is responsible
+     * for only invoking it when [RiskAssessor] returns [RiskVerdict.RequireBiometric].
+     *
      * @param tool The tool to execute
      * @param args Tool arguments
      * @param serviceContext The accessibility service context
      * @param appContext Application context for launching the auth activity
+     * @param reason Human-readable reason for the auth prompt (from RiskAssessor)
      * @return ToolOutcome — the tool result if approved, AuthErr if denied
      */
     suspend fun executeWithAuth(
@@ -51,18 +57,15 @@ object HITLInterceptionWrapper {
         args: Map<String, String>,
         serviceContext: ToolServiceContext,
         appContext: Context,
+        reason: String = "",
     ): ToolOutcome {
-        if (!tool.requiresAuth) {
-            // No auth needed — execute directly
-            return tool.execute(args, serviceContext)
-        }
-
-        Log.d(TAG, "HITL auth required for tool: ${tool.name}")
+        Log.d(TAG, "HITL auth required for tool: ${tool.name} (reason: $reason)")
 
         // Launch transparent BiometricAuthActivity
         val intent = Intent(appContext, BiometricAuthActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             putExtra(BiometricAuthActivity.EXTRA_TOOL_NAME, tool.name)
+            putExtra(BiometricAuthActivity.EXTRA_REASON, reason)
         }
         appContext.startActivity(intent)
 
@@ -89,3 +92,4 @@ object HITLInterceptionWrapper {
         }
     }
 }
+

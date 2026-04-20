@@ -8,9 +8,12 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 
 private const val TAG = "GenieModelDownloadMgr"
 
@@ -29,6 +32,21 @@ sealed class DownloadState {
     ) : DownloadState()
     data object Ready : DownloadState()
     data class Failed(val message: String) : DownloadState()
+}
+
+internal suspend fun awaitTerminalDownloadState(
+    downloadState: Flow<DownloadState>,
+    onProgress: (DownloadState.Downloading) -> Unit = {},
+): DownloadState {
+    return downloadState
+        .onEach { state ->
+            if (state is DownloadState.Downloading) {
+                onProgress(state)
+            }
+        }
+        .first { state ->
+            state is DownloadState.Ready || state is DownloadState.Failed
+        }
 }
 
 /**
@@ -63,7 +81,6 @@ class ModelDownloadManager(private val context: Context) {
      */
     fun ensureModelReady(
         modelConfig: GenieModelConfig = GenieModelConfig.DEFAULT,
-        accessToken: String? = null,
     ) {
         _downloadState.value = DownloadState.Checking
 
@@ -74,7 +91,7 @@ class ModelDownloadManager(private val context: Context) {
         }
 
         Log.d(TAG, "Model not found locally, starting download...")
-        startDownload(modelConfig, accessToken)
+        startDownload(modelConfig)
     }
 
     /**
@@ -83,7 +100,6 @@ class ModelDownloadManager(private val context: Context) {
      */
     private fun startDownload(
         modelConfig: GenieModelConfig,
-        accessToken: String?,
     ) {
         // Build input data (from Gallery's DownloadRepository)
         val inputDataBuilder = Data.Builder()
@@ -93,10 +109,6 @@ class ModelDownloadManager(private val context: Context) {
             .putString(DownloadConsts.KEY_MODEL_DOWNLOAD_MODEL_DIR, modelConfig.normalizedName)
             .putString(DownloadConsts.KEY_MODEL_DOWNLOAD_FILE_NAME, modelConfig.modelFile)
             .putLong(DownloadConsts.KEY_MODEL_TOTAL_BYTES, modelConfig.sizeInBytes)
-
-        if (accessToken != null) {
-            inputDataBuilder.putString(DownloadConsts.KEY_MODEL_DOWNLOAD_ACCESS_TOKEN, accessToken)
-        }
 
         // Create worker request (from Gallery)
         val downloadWorkRequest = OneTimeWorkRequestBuilder<ModelDownloadWorker>()

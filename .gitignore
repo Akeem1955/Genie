@@ -6,7 +6,7 @@
 # SENSITIVE — Never commit these
 # ============================================================
 
-# HuggingFace tokens or any local secrets
+# Local secrets
 *.token
 *.secret
 local.properties
@@ -16,7 +16,6 @@ genie_secure_prefs*
 
 # API keys accidentally placed in a file
 *api_key*
-*hf_token*
 
 # ============================================================
 # MODEL FILES — Large binary files, downloaded at runtime
@@ -112,3 +111,4 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+AGENTS.md
