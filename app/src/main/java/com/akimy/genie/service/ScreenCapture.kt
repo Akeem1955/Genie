@@ -35,8 +35,8 @@ object ScreenCapture {
             service.takeScreenshot(
                 0, // display ID
                 service.mainExecutor,
-                object : AccessibilityService.TakeScreenshotCallback() {
-                    override fun onSuccess(screenshotResult: ScreenshotResult) {
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(screenshotResult: AccessibilityService.ScreenshotResult) {
                         try {
                             val hardwareBuffer = screenshotResult.hardwareBuffer
                             val colorSpace = screenshotResult.colorSpace

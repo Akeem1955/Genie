@@ -88,7 +88,7 @@ class GenieEngine {
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = Backend.GPU(),
-                maxNumTokens = 1024,
+                maxNumTokens = 16_384,
                 cacheDir = context.cacheDir.path,
             )
 

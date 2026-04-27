@@ -1,6 +1,9 @@
 package com.akimy.genie.engine
 
 import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import java.io.File
 import android.util.Log
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
@@ -8,12 +11,14 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.withContext
 
 private const val TAG = "GenieModelDownloadMgr"
 
@@ -79,7 +84,7 @@ class ModelDownloadManager(private val context: Context) {
      * Check if the model is already downloaded, and if not, start downloading it.
      * This is the entry point for the Bootstrap phase.
      */
-    fun ensureModelReady(
+    suspend fun ensureModelReady(
         modelConfig: GenieModelConfig = GenieModelConfig.DEFAULT,
     ) {
         _downloadState.value = DownloadState.Checking
@@ -90,15 +95,93 @@ class ModelDownloadManager(private val context: Context) {
             return
         }
 
-        Log.d(TAG, "Model not found locally, starting download...")
+        // Check the public Downloads folder before hitting the network.
+        if (tryImportFromDownloads(modelConfig)) {
+            _downloadState.value = DownloadState.Ready
+            return
+        }
+
+        Log.d(TAG, "Model not found locally or in Downloads, starting download...")
         startDownload(modelConfig)
     }
+
+    /**
+     * Looks for the model file in the device's public Downloads folder.
+     * If found, copies it into the app-private storage path that [GenieModelConfig.isDownloaded]
+     * checks, then returns true. Returns false if the file is absent or the copy fails.
+     */
+    private suspend fun tryImportFromDownloads(modelConfig: GenieModelConfig): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val downloadsDir =
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val sourceFile = File(downloadsDir, modelConfig.modelFile)
+
+                if (!sourceFile.exists()) {
+                    Log.d(TAG, "Model not found in Downloads: ${sourceFile.absolutePath}")
+                    return@withContext false
+                }
+
+                val targetFile = File(modelConfig.getLocalPath(context))
+                targetFile.parentFile?.mkdirs()
+
+                Log.d(TAG, "Found model in Downloads — copying to app storage...")
+                _downloadState.value = DownloadState.Downloading(
+                    progressPercent = 0,
+                    receivedBytes = 0,
+                    totalBytes = sourceFile.length(),
+                    bytesPerSecond = 0,
+                    remainingMs = 0,
+                )
+
+                sourceFile.copyTo(targetFile, overwrite = true)
+                Log.d(TAG, "Model copied from Downloads successfully")
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not import from Downloads: ${e.message}")
+                false
+            }
+        }
+
+    /**
+     * Copies a model from a user-selected SAF Uri into the app's internal storage path.
+     */
+    suspend fun importCustomModelUri(uri: Uri, modelConfig: GenieModelConfig): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val targetFile = File(modelConfig.getLocalPath(context))
+                targetFile.parentFile?.mkdirs()
+
+                Log.d(TAG, "Copying custom model from URI to app storage...")
+                _downloadState.value = DownloadState.Downloading(
+                    progressPercent = 50, // Just an indeterminate indication since stream copy blocks
+                    receivedBytes = 0,
+                    totalBytes = 0,
+                    bytesPerSecond = 0,
+                    remainingMs = 0,
+                )
+
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    targetFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                Log.d(TAG, "Model copied from URI successfully")
+                _downloadState.value = DownloadState.Ready
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not import from URI: ${e.message}")
+                _downloadState.value = DownloadState.Failed("Import failed: ${e.message}")
+                false
+            }
+        }
 
     /**
      * Start the model download using WorkManager.
      * Adapted from Gallery's DefaultDownloadRepository.downloadModel()
      */
-    private fun startDownload(
+    private suspend fun startDownload(
         modelConfig: GenieModelConfig,
     ) {
         // Build input data (from Gallery's DownloadRepository)
@@ -126,8 +209,8 @@ class ModelDownloadManager(private val context: Context) {
             downloadWorkRequest,
         )
 
-        // Observe progress (adapted from Gallery's DownloadRepository)
-        workManager.getWorkInfoByIdLiveData(workerId).observeForever { workInfo ->
+        // Observe progress using the coroutine-native Flow API — no main thread required.
+        workManager.getWorkInfoByIdFlow(workerId).collect { workInfo ->
             if (workInfo != null) {
                 when (workInfo.state) {
                     WorkInfo.State.ENQUEUED -> {

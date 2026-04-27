@@ -249,7 +249,7 @@ private fun VisualizerCanvasScreen(initialSceneId: String?) {
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        val result = VisualizerSceneStore.renameScene(snapshot.scene.sceneId, renameText)
+                        val result = VisualizerSceneStore.renameScene(snapshot?.scene?.sceneId ?:"Ooops Error Happened" , renameText)
                         Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
                         renameDialogOpen = false
                         refreshTick = System.currentTimeMillis()

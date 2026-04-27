@@ -66,32 +66,38 @@ data class GenieModelConfig(
 
     companion object {
         private const val S3_BASE =
-            "https://simiebot-video-assets-072531718183-us-east-1-an.s3.us-east-1.amazonaws.com/Genie/"
+            "https://simiebot-video-assets-072531718183-us-east-1-an.s3.us-east-1.amazonaws.com/Genie//"
 
         /**
-         * Default: Gemma 4 — Effective 4-Bit quantized.
-         * Hosted on private S3 bucket (no HF token required).
-         */
-        val DEFAULT = GenieModelConfig(
-            modelId = "genie/gemma-4-E4B-it",
-            modelFile = "gemma-4-E4B-it.litertlm",
-            commitHash = "v1",
-            sizeInBytes = 1_500_000_000L, // ~1.5 GB estimated
-            displayName = "Gemma 4 (E4B)",
-            customUrl = "${S3_BASE}gemma-4-E4B-it.litertlm",
-        )
-
-        /**
-         * Alternative: Gemma 4 — Effective 2-Bit quantized (lighter).
-         * Smaller on-device footprint, slightly lower quality.
+         * Gemma 4 — Effective 2-Bit quantized (lighter).
+         * Smaller on-device footprint (~900 MB), slightly lower quality.
          */
         val E2B = GenieModelConfig(
             modelId = "genie/gemma-4-E2B-it",
             modelFile = "gemma-4-E2B-it.litertlm",
             commitHash = "v1",
-            sizeInBytes = 900_000_000L, // ~900 MB estimated
+            sizeInBytes = 2_583_085_056L,
             displayName = "Gemma 4 (E2B)",
             customUrl = "${S3_BASE}gemma-4-E2B-it.litertlm",
         )
+
+        /**
+         * Gemma 4 — Effective 4-Bit quantized.
+         * Higher quality, larger footprint (~1.5 GB).
+         */
+        val E4B = GenieModelConfig(
+            modelId = "genie/gemma-4-E4B-it",
+            modelFile = "gemma-4-E4B-it.litertlm",
+            commitHash = "v1",
+            sizeInBytes = 3_654_467_584L,
+            displayName = "Gemma 4 (E4B)",
+            customUrl = "${S3_BASE}gemma-4-E4B-it.litertlm",
+        )
+
+        /** Default model is E2B. */
+        val DEFAULT = E2B
+
+        /** All available model configs for the UI chooser. */
+        val ALL = listOf(E2B, E4B)
     }
 }

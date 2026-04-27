@@ -31,6 +31,7 @@ import com.akimy.genie.engine.DownloadState
 import com.akimy.genie.engine.GenieEngine
 import com.akimy.genie.engine.GenieModelConfig
 import com.akimy.genie.engine.ModelDownloadManager
+import com.akimy.genie.engine.ModelPrefs
 import com.akimy.genie.engine.awaitTerminalDownloadState
 import com.akimy.genie.telemetry.EventLogger
 import com.akimy.genie.telemetry.GenieEvent
@@ -212,40 +213,16 @@ class GenieAccessibilityService : AccessibilityService(),
         downloadManager = ModelDownloadManager(this)
 
         serviceScope.launch {
-            // Step 1: Check/download model
-            val modelConfig = GenieModelConfig.DEFAULT
+            // Step 1: Check model — user must have selected and downloaded via MainActivity
+            val modelConfig = ModelPrefs.getSelectedConfig(this@GenieAccessibilityService)
             val plannerToolProviders = geniePlannerToolProviders()
 
-            if (!modelConfig.isDownloaded(this@GenieAccessibilityService)) {
+            if (modelConfig == null || !modelConfig.isDownloaded(this@GenieAccessibilityService)) {
+                Log.w(TAG, "Model not ready. Selection: ${modelConfig?.displayName}")
                 withContext(Dispatchers.Main) {
-                    readTextAloud("Hello! I'm Genie. Downloading the AI model for first-time setup.")
+                    readTextAloud("Please open the Genie app first to select and download an AI model.")
                 }
-
-                val manager = downloadManager ?: return@launch
-                manager.ensureModelReady(modelConfig)
-
-                when (
-                    val terminalState = awaitTerminalDownloadState(
-                        manager.downloadState,
-                        onProgress = { state ->
-                            Log.d(TAG, "Download progress: ${state.progressPercent}%")
-                        }
-                    )
-                ) {
-                    is DownloadState.Ready -> {
-                        Log.d(TAG, "Model download complete")
-                    }
-
-                    is DownloadState.Failed -> {
-                        Log.e(TAG, "Download failed: ${terminalState.message}")
-                        withContext(Dispatchers.Main) {
-                            readTextAloud("Model download failed. Please check your connection.")
-                        }
-                        return@launch
-                    }
-
-                    else -> Unit
-                }
+                return@launch
             }
 
             // Step 2: Initialize LiteRT-LM engine

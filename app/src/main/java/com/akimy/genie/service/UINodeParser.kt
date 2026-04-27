@@ -415,14 +415,14 @@ object UINodeParser {
         }
 
         if (previousFocused?.id == currentFocused?.id && currentFocused != null) {
-            if (previousFocused.isEnabled != currentFocused.isEnabled) {
+            if (previousFocused?.isEnabled != currentFocused.isEnabled) {
                 changes += SemanticChange(
                     category = "state",
                     summary = "${currentFocused.label} is now ${if (currentFocused.isEnabled) "enabled" else "disabled"}.",
                     nodeId = currentFocused.id,
                 )
             }
-            if (previousFocused.stateDescription != currentFocused.stateDescription &&
+            if (previousFocused?.stateDescription != currentFocused.stateDescription &&
                 !currentFocused.stateDescription.isNullOrBlank()
             ) {
                 changes += SemanticChange(
@@ -431,7 +431,7 @@ object UINodeParser {
                     nodeId = currentFocused.id,
                 )
             }
-            if (previousFocused.errorText != currentFocused.errorText &&
+            if (previousFocused?.errorText != currentFocused.errorText &&
                 !currentFocused.errorText.isNullOrBlank()
             ) {
                 changes += SemanticChange(
