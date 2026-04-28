@@ -22,6 +22,48 @@ class ClickTool : GenieTool {
     }
 }
 
+class TapAtTool : GenieTool {
+    override val name = "tap_at"
+    override val description = "Tap a normalized screen coordinate where x and y are 0..1000"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val normalizedX = args["x"]?.toFloatOrNull()
+            ?: return ToolOutcome.LogicErr("Missing or invalid 'x' argument")
+        val normalizedY = args["y"]?.toFloatOrNull()
+            ?: return ToolOutcome.LogicErr("Missing or invalid 'y' argument")
+
+        if (normalizedX !in 0f..1000f || normalizedY !in 0f..1000f) {
+            return ToolOutcome.LogicErr("'x' and 'y' must be normalized coordinates from 0 to 1000")
+        }
+
+        val viewport = serviceContext.getViewportInfo()
+        if (viewport.widthPx <= 0 || viewport.heightPx <= 0) {
+            return ToolOutcome.TransientErr("Viewport dimensions are unavailable")
+        }
+
+        val realX = normalizedToPixel(normalizedX, viewport.widthPx)
+        val realY = normalizedToPixel(normalizedY, viewport.heightPx)
+
+        return if (serviceContext.tap(realX, realY)) {
+            ToolOutcome.Ok(
+                "Tapped normalized (${normalizedX.formatCoordinate()}, ${normalizedY.formatCoordinate()}) " +
+                    "at pixel (${realX.toInt()}, ${realY.toInt()})"
+            )
+        } else {
+            ToolOutcome.TransientErr("Tap gesture failed at normalized (${normalizedX.formatCoordinate()}, ${normalizedY.formatCoordinate()})")
+        }
+    }
+
+    private fun normalizedToPixel(value: Float, sizePx: Int): Float {
+        val maxPixel = (sizePx - 1).coerceAtLeast(0).toFloat()
+        return ((value / 1000f) * maxPixel).coerceIn(0f, maxPixel)
+    }
+
+    private fun Float.formatCoordinate(): String {
+        return if (this % 1f == 0f) this.toInt().toString() else "%.1f".format(this)
+    }
+}
+
 class TypeTextTool : GenieTool {
     override val name = "type_text"
     override val description = "Type text into the currently focused input field"

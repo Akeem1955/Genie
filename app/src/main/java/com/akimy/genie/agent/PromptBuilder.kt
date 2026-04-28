@@ -34,10 +34,12 @@ class PromptBuilder(
 12. When teaching with the board, prefer small deliberate board updates: create the board, add or update the needed objects, set narration, then reveal or advance steps.
 13. Use annotate_scene and annotation_add_* tools for standalone screen annotation workflows where Genie should label or point at on-screen regions with timed overlays.
 14. When visual details are critical (icons, charts, unlabeled controls, or drawing targets), call take_screenshot. The captured image will be injected into the next planning turn.
+15. Use tap_at only after a screenshot is available or after text/accessibility tools cannot reach a visible control. tap_at uses normalized Android coordinates: x=0 left, x=1000 right, y=0 top, y=1000 bottom.
 
 ## Important
 - Be precise with click targets and use exact visible text when possible.
 - Prefer activating the focused control over guessing touch coordinates.
+- Prefer click or focus_by_text for visible text. Use tap_at for unlabeled icons, image-only controls, or inaccessible visible elements.
 - Keep actions small and deliberate so Genie can recover from volatile Android UIs.
 - When a screenshot is attached, ground decisions to visible pixels in that image.
 - For annotation_add_* tools, prefer normalized coordinates in the 0.0-1.0 range unless exact pixels are required.

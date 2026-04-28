@@ -30,14 +30,14 @@ private enum class RiskSignal(val label: String) {
 /**
  * Deterministic, local risk assessor for Smart HITL.
  *
- * Evaluates `click` and `type_text` tool calls against the current screen context
+ * Evaluates `click`, `tap_at`, and `type_text` tool calls against the current screen context
  * using hard-coded rules. Requires **≥2 independent risk signals** to trigger
  * biometric authentication.
  *
  * This is fully local — no LLM, no network, no latency.
  *
  * Design principles:
- * - Only `click` and `type_text` are assessed (they are the only mutation tools)
+ * - Only `click`, `tap_at`, and `type_text` are assessed (they are the mutation tools)
  * - All other tools short-circuit to [RiskVerdict.Allow]
  * - ≥2 signals required to avoid false positives on benign actions
  * - Signals are derived from data already in the accessibility tree
@@ -95,22 +95,22 @@ object RiskAssessor {
     /**
      * Assess whether a tool call requires biometric HITL based on the current screen.
      *
-     * Only `click` and `type_text` are evaluated. All other tools return [RiskVerdict.Allow].
+     * Only `click`, `tap_at`, and `type_text` are evaluated. All other tools return [RiskVerdict.Allow].
      *
      * @param toolName The tool being invoked
-     * @param args The tool arguments (contains "target" for click, "text" for type_text)
+     * @param args The tool arguments
      * @param screen The current screen context snapshot
      * @return [RiskVerdict.Allow] or [RiskVerdict.RequireBiometric]
      */
     fun assess(toolName: String, args: Map<String, String>, screen: ScreenContext): RiskVerdict {
         // Only assess mutation tools
-        if (toolName != "click" && toolName != "type_text") {
+        if (toolName !in setOf("click", "tap_at", "type_text")) {
             return RiskVerdict.Allow
         }
 
         val signals = mutableListOf<RiskSignal>()
 
-        // -- Shared signals (apply to both click and type_text) --
+        // -- Shared signals (apply to all assessed mutation tools) --
         if (isFinancialScreen(screen)) signals.add(RiskSignal.FINANCIAL_SCREEN)
         if (isSensitiveApp(screen)) signals.add(RiskSignal.SENSITIVE_APP)
 
@@ -120,6 +120,8 @@ object RiskAssessor {
                 val target = args["target"] ?: ""
                 if (isDestructiveVerb(target)) signals.add(RiskSignal.DESTRUCTIVE_VERB)
             }
+
+            "tap_at" -> Unit
 
             "type_text" -> {
                 if (isSensitiveField(screen)) signals.add(RiskSignal.SENSITIVE_FIELD)

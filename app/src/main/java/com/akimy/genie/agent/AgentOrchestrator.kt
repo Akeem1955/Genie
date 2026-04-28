@@ -34,6 +34,7 @@ private const val MAX_VISUALIZER_JSON_CHARS = 24_000
 private const val MAX_BOARD_OBJECTS_JSON_CHARS = 32_000
 private const val MAX_BOARD_STEPS_JSON_CHARS = 16_000
 private const val MAX_ANNOTATION_STYLE_JSON_CHARS = 4_000
+private const val MAX_SANITIZED_PLANNER_ERROR_CHARS = 220
 private val SCENE_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
 private val OBJECT_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
 private val ALLOWED_DIAGRAM_TYPES = setOf("flowchart", "cycle", "timeline", "mindmap", "table")
@@ -106,10 +107,12 @@ class AgentOrchestrator(
         goal: String,
         serviceContext: ToolServiceContext,
         onStatusUpdate: (String) -> Unit = {},
+        onToolExecuting: (String, String?) -> Unit = { _, _ -> },
     ): String = executeGoalInternal(
         goal = goal,
         serviceContext = serviceContext,
         onStatusUpdate = onStatusUpdate,
+        onToolExecuting = onToolExecuting,
         allowSkillLookup = true,
         isNovelPlan = true,
     )
@@ -118,6 +121,7 @@ class AgentOrchestrator(
         goal: String,
         serviceContext: ToolServiceContext,
         onStatusUpdate: (String) -> Unit,
+        onToolExecuting: (String, String?) -> Unit,
         allowSkillLookup: Boolean,
         isNovelPlan: Boolean,
     ): String = withContext(Dispatchers.Default) {
@@ -137,6 +141,7 @@ class AgentOrchestrator(
                         skillMatch = skillMatch,
                         serviceContext = serviceContext,
                         onStatusUpdate = onStatusUpdate,
+                        onToolExecuting = onToolExecuting,
                     )
                 }
 
@@ -169,11 +174,14 @@ class AgentOrchestrator(
             EventLogger.emit(GenieEvent.StateTransition("building_prompt", "planning"))
             when (val planResult = planner.plan(prompt, visionInputsForTurn)) {
                 is PlanResult.Success -> {
-                    val decision = planResult.decision
+                    val decision = normalizeDecision(planResult.decision)
                     state.history.add(HistoryEntry.ModelDecision(decision))
 
                     when (decision) {
                         is Decision.Act -> {
+                            val humanReadable = getHumanReadableToolAction(decision.tool, decision.args)
+                            onToolExecuting(humanReadable.first, humanReadable.second)
+
                             val outcome = executeToolWithSafety(
                                 decision,
                                 state,
@@ -284,7 +292,7 @@ class AgentOrchestrator(
                         HistoryEntry.ToolResult(
                             "planner",
                             emptyMap(),
-                            ToolOutcome.LogicErr("Could not parse your response. ${planResult.message}"),
+                            ToolOutcome.LogicErr(buildPlannerCorrection(planResult.message)),
                         )
                     )
                 }
@@ -312,7 +320,7 @@ class AgentOrchestrator(
         onStatusUpdate: (String) -> Unit,
     ): ToolOutcome {
         val tool = toolRegistry.getTool(decision.tool)
-            ?: return ToolOutcome.LogicErr("Unknown tool: '${decision.tool}'")
+            ?: return ToolOutcome.LogicErr(buildUnknownToolCorrection(decision.tool))
 
         val startTime = System.currentTimeMillis()
         val screenContext = serviceContext.getScreenContext()
@@ -346,6 +354,123 @@ class AgentOrchestrator(
         )
 
         return outcome
+    }
+
+    private fun normalizeDecision(decision: Decision): Decision {
+        if (decision !is Decision.Act) return decision
+
+        val normalizedTool = normalizeToolName(decision.tool) ?: return decision
+        if (normalizedTool == decision.tool) return decision
+
+        Log.w(TAG, "Normalized planner tool name '${decision.tool}' -> '$normalizedTool'")
+        return decision.copy(tool = normalizedTool)
+    }
+
+    private fun normalizeToolName(rawToolName: String): String? {
+        val toolName = rawToolName.trim()
+        val validTools = toolRegistry.getToolNames()
+        if (toolName in validTools) return toolName
+
+        return validTools.firstOrNull { valid ->
+            val suffix = valid.substringAfterLast('_')
+            toolName == "${valid}_$suffix"
+        }
+    }
+
+    private fun buildPlannerCorrection(rawError: String): String {
+        val sanitizedError = sanitizePlannerError(rawError)
+        val malformedToolName = extractMalformedToolName(rawError)
+        val nearest = malformedToolName?.let(::findNearestToolName)
+        return buildString {
+            append("Planner returned an invalid native tool call")
+            if (sanitizedError.isNotBlank()) {
+                append(": ")
+                append(sanitizedError)
+            }
+            append(". ")
+            if (nearest != null) {
+                append("Nearest valid tool: '$nearest'. ")
+            }
+            append("Correction: call exactly one native LiteRT-LM tool. ")
+            append("Do not write tool-call text or duplicate argument values. ")
+            append("Valid tool names: ")
+            append(validToolList())
+        }
+    }
+
+    private fun buildUnknownToolCorrection(toolName: String): String {
+        val nearest = findNearestToolName(toolName)
+        return buildString {
+            append("Unknown tool '$toolName'. ")
+            if (nearest != null) {
+                append("Nearest valid tool: '$nearest'. ")
+            }
+            append("Correction: call exactly one valid native tool and use only its declared arguments. ")
+            append("Valid tool names: ")
+            append(validToolList())
+        }
+    }
+
+    private fun sanitizePlannerError(rawError: String): String {
+        val compact = rawError
+            .replace(Regex("\\s+"), " ")
+            .replace(Regex("Status Code: \\d+\\. Message: "), "")
+            .replace(Regex("with error:.*$", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        val malformedCall = Regex("Failed to parse tool calls from response: (.*)")
+            .find(compact)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.substringBefore(" code block:")
+            ?.trim()
+
+        val summary = malformedCall?.let { "malformed tool call '$it'" } ?: compact
+        return summary.take(MAX_SANITIZED_PLANNER_ERROR_CHARS)
+    }
+
+    private fun extractMalformedToolName(rawError: String): String? {
+        return Regex("call:([A-Za-z0-9_]+)").find(rawError)?.groupValues?.getOrNull(1)
+    }
+
+    private fun validToolList(): String {
+        return toolRegistry.getToolNames().sorted().joinToString(", ")
+    }
+
+    private fun findNearestToolName(rawToolName: String): String? {
+        normalizeToolName(rawToolName)?.let { return it }
+
+        val toolName = rawToolName.trim()
+        if (toolName.isBlank()) return null
+
+        return toolRegistry.getToolNames()
+            .minByOrNull { levenshteinDistance(toolName, it) }
+    }
+
+    private fun levenshteinDistance(left: String, right: String): Int {
+        if (left == right) return 0
+        if (left.isEmpty()) return right.length
+        if (right.isEmpty()) return left.length
+
+        var previous = IntArray(right.length + 1) { it }
+        var current = IntArray(right.length + 1)
+
+        for (i in left.indices) {
+            current[0] = i + 1
+            for (j in right.indices) {
+                val cost = if (left[i] == right[j]) 0 else 1
+                current[j + 1] = minOf(
+                    current[j] + 1,
+                    previous[j + 1] + 1,
+                    previous[j] + cost,
+                )
+            }
+            val swap = previous
+            previous = current
+            current = swap
+        }
+
+        return previous[right.length]
     }
 
     /**
@@ -1063,8 +1188,12 @@ class AgentOrchestrator(
         skillMatch: SkillMatch.Cached,
         serviceContext: ToolServiceContext,
         onStatusUpdate: (String) -> Unit,
+        onToolExecuting: (String, String?) -> Unit,
     ): String {
         for (step in skillMatch.steps) {
+            val humanReadable = getHumanReadableToolAction(step.tool, step.args)
+            onToolExecuting(humanReadable.first, humanReadable.second)
+
             val outcome = executeToolWithSafety(step, state, serviceContext, onStatusUpdate)
             state.history.add(HistoryEntry.ToolResult(step.tool, step.args, outcome))
 
@@ -1077,6 +1206,7 @@ class AgentOrchestrator(
                         goal = state.goal,
                         serviceContext = serviceContext,
                         onStatusUpdate = onStatusUpdate,
+                        onToolExecuting = onToolExecuting,
                         allowSkillLookup = false,
                         isNovelPlan = false,
                     )
@@ -1138,6 +1268,35 @@ class AgentOrchestrator(
             Log.d(TAG, "Written new skill: '${skill.goalPattern}' (${actSteps.size} steps)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to write skill: ${e.message}")
+        }
+    }
+
+    private fun getHumanReadableToolAction(toolName: String, args: Map<String, String>): Pair<String, String?> {
+        return when (toolName) {
+            "tap_at" -> "Tapping screen..." to listOfNotNull(args["x"], args["y"]).joinToString(", ").takeIf { it.isNotBlank() }
+            "click" -> "Tapping element…" to args["target"]
+            "type_text" -> "Typing text…" to args["text"]?.take(30)
+            "open_app" -> "Opening app…" to args["name"]
+            "read_screen_summary", "read_screen", "where_am_i", "read_nearby_context", "what_can_i_do_here" -> "Analyzing screen…" to null
+            "swipe" -> "Swiping screen…" to args["direction"]
+            "scroll", "scroll_forward", "scroll_backward" -> "Scrolling screen…" to null
+            "focus_next", "focus_previous", "focus_first" -> "Navigating focus…" to null
+            "focus_by_text", "focus_element_by_text" -> "Finding text…" to args["target"]
+            "focus_by_role" -> "Finding element…" to args["role"]
+            "activate_focused" -> "Activating focused item…" to null
+            "take_screenshot" -> "Capturing screen…" to null
+            "read_recent_events", "read_screen_changes" -> "Checking screen updates…" to null
+            "read_form_state" -> "Reading form…" to null
+            "save_fact" -> "Remembering detail…" to args["key"]
+            "retrieve_fact" -> "Recalling memory…" to args["key"]
+            "read_pdf_page_range" -> "Reading document…" to args["file_path"]?.substringAfterLast('/')
+            "finish_task" -> "Finishing task…" to args["summary"]
+            else -> {
+                if (toolName.startsWith("board_") || toolName == "teach_with_board") "Teaching concept…" to null
+                else if (toolName.startsWith("annotation_") || toolName == "annotate_scene") "Drawing annotation…" to null
+                else if (toolName.startsWith("visualize_")) "Visualizing concept…" to null
+                else "Executing action…" to toolName
+            }
         }
     }
 }

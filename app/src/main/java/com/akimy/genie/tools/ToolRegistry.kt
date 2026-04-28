@@ -19,6 +19,7 @@ class ToolRegistry {
     init {
         // Register all built-in tools
         register(ClickTool())
+        register(TapAtTool())
         register(TypeTextTool())
         register(SwipeTool())
         register(ScrollTool())

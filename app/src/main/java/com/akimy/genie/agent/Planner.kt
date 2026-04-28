@@ -4,6 +4,7 @@ import android.util.Log
 import com.akimy.genie.data.SkillDao
 import com.akimy.genie.engine.AgentResponse
 import com.akimy.genie.engine.GenieEngine
+import com.akimy.genie.telemetry.ErrorTaxonomy
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.ToolCall
 import kotlinx.serialization.json.Json
@@ -103,7 +104,11 @@ class Planner(
 
         val errorResponse = responseChunks.filterIsInstance<AgentResponse.Error>().firstOrNull()
         if (errorResponse != null) {
-            return PlanResult.Error(errorResponse.error.toString())
+            val taxonomy = errorResponse.error
+            if (taxonomy is ErrorTaxonomy.LogicErr) {
+                return PlanResult.ParseError(taxonomy.message)
+            }
+            return PlanResult.Error(taxonomy.toString())
         }
 
         toolCallMessage?.let { return parseDecision(it) }

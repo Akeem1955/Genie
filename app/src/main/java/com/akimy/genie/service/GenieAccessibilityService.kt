@@ -16,6 +16,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
@@ -24,6 +25,23 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.akimy.genie.ui.AgentUIState
+import com.akimy.genie.ui.GenieOverlayUI
+import kotlinx.coroutines.flow.MutableStateFlow
+import android.media.MediaPlayer
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import android.os.Looper
 import com.akimy.genie.R
 import com.akimy.genie.agent.*
 import com.akimy.genie.data.GenieDatabase
@@ -69,6 +87,28 @@ private const val MAX_VISION_IMAGE_EDGE_PX = 1280
  *
  *
  */
+private class FakeLifecycleOwner : LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    private val store = ViewModelStore()
+
+    init {
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+    }
+
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
+    override val viewModelStore: ViewModelStore get() = store
+
+    fun destroy() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        store.clear()
+    }
+}
+
 class GenieAccessibilityService : AccessibilityService(),
     org.vosk.android.RecognitionListener,
     ToolServiceContext {
@@ -94,10 +134,14 @@ class GenieAccessibilityService : AccessibilityService(),
     private var stt: SpeechRecognizer? = null
     private var enabled = false
     @Volatile private var agentBusy = false
+    @Volatile private var isWelcomeMessageFinished = false
 
     // -- Overlay components --
     private var windowManager: WindowManager? = null
-    private var processingOverlay: FrameLayout? = null
+    private var composeOverlay: ComposeView? = null
+    private var fakeLifecycleOwner: FakeLifecycleOwner? = null
+    private val uiStateFlow = MutableStateFlow<AgentUIState>(AgentUIState.Initializing)
+    private var mediaPlayer: MediaPlayer? = null
     private var annotationOverlayController: AnnotationOverlayController? = null
     @Volatile private var latestScreenshotPngBytes: ByteArray? = null
     private val fingerprintGestureCallback = object : FingerprintGestureController.FingerprintGestureCallback() {
@@ -126,7 +170,8 @@ class GenieAccessibilityService : AccessibilityService(),
 
         override fun onError(error: Int) {
             Log.d(TAG, "STT: onError code=$error")
-            removeProcessingOverlay()
+            setUiState(AgentUIState.Idle)
+            startWakeWordListening()
         }
 
         override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -134,7 +179,7 @@ class GenieAccessibilityService : AccessibilityService(),
         override fun onReadyForSpeech(params: Bundle?) {}
 
         override fun onResults(results: Bundle?) {
-            removeProcessingOverlay()
+            setUiState(AgentUIState.Thinking)
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.getOrNull(0) ?: ""
             Log.d(TAG, "STT result: $text")
@@ -173,6 +218,8 @@ class GenieAccessibilityService : AccessibilityService(),
         VisualizerSceneStore.initialize(applicationContext)
         ScreenMapStore.initialize(applicationContext)
         registerFingerprintGestures()
+        setupComposeOverlay()
+        mediaPlayer = MediaPlayer.create(this, R.raw.genie)
 
         // Bootstrap sequence: download model → init engine → init voice → listen
         bootstrap()
@@ -198,7 +245,9 @@ class GenieAccessibilityService : AccessibilityService(),
         stt?.destroy()
         genieEngine.shutdown()
         serviceScope.cancel()
-        removeProcessingOverlay()
+        removeComposeOverlay()
+        mediaPlayer?.release()
+        mediaPlayer = null
         annotationOverlayController?.detach()
         annotationOverlayController = null
         super.onDestroy()
@@ -259,6 +308,9 @@ class GenieAccessibilityService : AccessibilityService(),
                 initVosk(this@GenieAccessibilityService)
                 initTts()
                 initStt()
+
+                // Finalize initialization
+                setUiState(AgentUIState.Idle)
             }
 
             val duration = System.currentTimeMillis() - startTime
@@ -279,8 +331,10 @@ class GenieAccessibilityService : AccessibilityService(),
             { model: VoskModel? ->
                 voskModel = model
                 enabled = true
-                Log.d(TAG, "Vosk model loaded, starting wake-word listening")
-                startWakeWordListening()
+                Log.d(TAG, "Vosk model loaded")
+                if (isWelcomeMessageFinished) {
+                    startWakeWordListening()
+                }
             },
             { error ->
                 Log.e(TAG, "Vosk init failed: ${error.message}")
@@ -308,6 +362,32 @@ class GenieAccessibilityService : AccessibilityService(),
         tts = TextToSpeech(this) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
             if (ttsReady) {
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+
+                    override fun onDone(utteranceId: String?) {
+                        if (utteranceId == "WELCOME_MESSAGE") {
+                            isWelcomeMessageFinished = true
+                        }
+                        serviceScope.launch(Dispatchers.Main) {
+                            if (enabled && !agentBusy) {
+                                startWakeWordListening()
+                            }
+                        }
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        if (utteranceId == "WELCOME_MESSAGE") {
+                            isWelcomeMessageFinished = true
+                        }
+                        serviceScope.launch(Dispatchers.Main) {
+                            if (enabled && !agentBusy) {
+                                startWakeWordListening()
+                            }
+                        }
+                    }
+                })
                 welcomeUser()
             } else {
                 Log.e(TAG, "TTS init failed")
@@ -323,23 +403,24 @@ class GenieAccessibilityService : AccessibilityService(),
 
     /** Speak the welcome message after voice startup. */
     private fun welcomeUser() {
-        readTextAloud("Hi! I'm Genie, your AI accessibility agent. Say Gemma to wake me up.")
-        serviceScope.launch {
-            delay(8000)
-            withContext(Dispatchers.Main) {
-                startWakeWordListening()
-            }
-        }
+        readTextAloud(
+            text = "Hi! I'm Genie, your AI accessibility agent. Say Gemma to wake me up.", 
+            utteranceId = "WELCOME_MESSAGE"
+        )
     }
 
     /** Speak text through TTS. */
-    private fun readTextAloud(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
+    private fun readTextAloud(
+        text: String, 
+        queueMode: Int = TextToSpeech.QUEUE_ADD, 
+        utteranceId: String = java.util.UUID.randomUUID().toString()
+    ) {
         val bundle = Bundle().apply {
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, 0.0f)
             putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
         }
-        tts?.speak(text, queueMode, bundle, UUID.randomUUID().toString())
+        tts?.speak(text, queueMode, bundle, utteranceId)
     }
 
     // ========================================================================
@@ -356,13 +437,23 @@ class GenieAccessibilityService : AccessibilityService(),
                     Log.d(TAG, "Wake word 'gemma' detected!")
                     speechService?.stop()
                     speechService = null
+                    setUiState(AgentUIState.Waking)
 
-                    // Switch to STT for command capture
-                    serviceScope.launch {
-                        withContext(Dispatchers.Main) {
-                            showProcessingOverlay()
-                            startSttListening()
+                    // Switch to STT for command capture after the sound plays
+                    if (mediaPlayer != null) {
+                        mediaPlayer?.setOnCompletionListener {
+                            setUiState(AgentUIState.Listening)
+                            serviceScope.launch(Dispatchers.Main) { startSttListening() }
                         }
+                        mediaPlayer?.setOnErrorListener { _, _, _ ->
+                            setUiState(AgentUIState.Listening)
+                            serviceScope.launch(Dispatchers.Main) { startSttListening() }
+                            true
+                        }
+                        mediaPlayer?.start()
+                    } else {
+                        setUiState(AgentUIState.Listening)
+                        serviceScope.launch(Dispatchers.Main) { startSttListening() }
                     }
                 }
             } catch (e: Exception) {
@@ -408,7 +499,7 @@ class GenieAccessibilityService : AccessibilityService(),
 
     private fun dispatchToAgent(userCommand: String) {
         Log.d(TAG, "Dispatching to agent: $userCommand")
-        showProcessingOverlay()
+        setUiState(AgentUIState.Thinking)
         agentBusy = true
 
         serviceScope.launch {
@@ -418,8 +509,12 @@ class GenieAccessibilityService : AccessibilityService(),
                     serviceContext = this@GenieAccessibilityService,
                     onStatusUpdate = { status ->
                         serviceScope.launch(Dispatchers.Main) {
+                            setUiState(AgentUIState.Speaking(status))
                             readTextAloud(status)
                         }
+                    },
+                    onToolExecuting = { title, subtitle ->
+                        setUiState(AgentUIState.Executing(title, subtitle))
                     }
                 ) ?: "Agent not ready"
             } catch (e: Exception) {
@@ -428,9 +523,16 @@ class GenieAccessibilityService : AccessibilityService(),
             } finally {
                 withContext(Dispatchers.Main) {
                     agentBusy = false
-                    removeProcessingOverlay()
-                    // Resume wake-word listening
-                    startWakeWordListening()
+                    setUiState(AgentUIState.Idle)
+                    
+                    // Small delay to let any pending TTS begin buffering
+                    kotlinx.coroutines.delay(300)
+                    
+                    // Only restart if TTS hasn't started speaking the result. 
+                    // If it is speaking, UtteranceProgressListener.onDone will restart it.
+                    if (tts?.isSpeaking != true) {
+                        startWakeWordListening()
+                    }
                 }
             }
 
@@ -442,46 +544,64 @@ class GenieAccessibilityService : AccessibilityService(),
     // Overlay windows
     // ========================================================================
 
-    private fun showProcessingOverlay() {
+    private fun setupComposeOverlay() {
+        // Accessibility services can reconnect without a clean visual teardown.
+        // Remove any view owned by this service before adding a fresh collector,
+        // otherwise an old "Initializing..." overlay can remain above the live one.
+        removeComposeOverlay()
+
         if (windowManager == null) {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         }
-        processingOverlay = FrameLayout(this)
+
+        fakeLifecycleOwner = FakeLifecycleOwner()
+        
+        composeOverlay = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(fakeLifecycleOwner)
+            setViewTreeSavedStateRegistryOwner(fakeLifecycleOwner)
+            setViewTreeViewModelStoreOwner(fakeLifecycleOwner)
+            setContent {
+                GenieOverlayUI(uiStateFlow)
+            }
+        }
 
         val lp = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             format = PixelFormat.TRANSLUCENT
-            flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            width = WindowManager.LayoutParams.WRAP_CONTENT
-            height = WindowManager.LayoutParams.WRAP_CONTENT
+            flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            width = WindowManager.LayoutParams.MATCH_PARENT
+            height = WindowManager.LayoutParams.MATCH_PARENT
             gravity = Gravity.CENTER
         }
 
-        // Simple text overlay instead of custom layout
-        val textView = TextView(this).apply {
-            text = "🧞 Genie is thinking..."
-            textSize = 18f
-            setBackgroundColor(0xCC000000.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(48, 24, 48, 24)
-        }
-        processingOverlay?.addView(textView)
-
         try {
-            windowManager?.addView(processingOverlay, lp)
+            windowManager?.addView(composeOverlay, lp)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to show overlay: ${e.message}")
+            Log.e(TAG, "Failed to show compose overlay: ${e.message}")
         }
     }
 
-    private fun removeProcessingOverlay() {
-        try {
-            if (processingOverlay != null && windowManager != null) {
-                windowManager?.removeView(processingOverlay)
-                processingOverlay = null
+    private fun setUiState(state: AgentUIState) {
+        Log.d(TAG, "Overlay state -> ${state.javaClass.simpleName}")
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            uiStateFlow.value = state
+        } else {
+            serviceScope.launch(Dispatchers.Main) {
+                uiStateFlow.value = state
             }
+        }
+    }
+
+    private fun removeComposeOverlay() {
+        try {
+            if (composeOverlay != null && windowManager != null) {
+                windowManager?.removeView(composeOverlay)
+                composeOverlay = null
+            }
+            fakeLifecycleOwner?.destroy()
+            fakeLifecycleOwner = null
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove overlay: ${e.message}")
+            Log.e(TAG, "Failed to remove compose overlay: ${e.message}")
         }
     }
 

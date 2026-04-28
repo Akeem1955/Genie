@@ -12,6 +12,8 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
@@ -24,6 +26,11 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.CancellationException
 
 private const val TAG = "GenieEngine"
+private const val AGENT_MAX_CONTEXT_LENGTH = 32_000
+private const val AGENT_MAX_TOKENS = 8_192
+private const val AGENT_TOP_K = 64
+private const val AGENT_TOP_P = 0.95
+private const val AGENT_TEMPERATURE = 1.0
 
 /**
  * Response chunk from the LLM during streaming.
@@ -83,12 +90,18 @@ class GenieEngine {
         val startTime = System.currentTimeMillis()
         try {
             Log.d(TAG, "Initializing engine with model: $modelPath")
+            Log.d(
+                TAG,
+                "Using agent config: maxContextLength=$AGENT_MAX_CONTEXT_LENGTH, " +
+                    "maxTokens=$AGENT_MAX_TOKENS, topK=$AGENT_TOP_K, " +
+                    "temperature=$AGENT_TEMPERATURE"
+            )
 
             // Engine config (from Gallery's LlmChatModelHelper)
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = Backend.GPU(),
-                maxNumTokens = 16_384,
+                maxNumTokens = AGENT_MAX_TOKENS,
                 cacheDir = context.cacheDir.path,
             )
 
@@ -98,17 +111,16 @@ class GenieEngine {
 
             // Create conversation with manual tool calling (critical for HITL)
             val conversationConfig = ConversationConfig(
-                samplerConfig = SamplerConfig(
-                    topK = 10,
-                    topP = 0.95,
-                    temperature = 0.7,
-                ),
+                samplerConfig = agentSamplerConfig(),
                 systemInstruction = PromptFormatting.buildSystemInstruction(systemPrompt),
                 tools = tools,
                 automaticToolCalling = false, // The "Golden Ticket" — HITL Safety Wrapper
             )
 
-            val newConversation = newEngine.createConversation(conversationConfig)
+            val newConversation = createConversationWithConstrainedDecoding(
+                engine = newEngine,
+                conversationConfig = conversationConfig,
+            )
 
             engine = newEngine
             conversation = newConversation
@@ -180,15 +192,22 @@ class GenieEngine {
                     trySend(AgentResponse.Done)
                     close()
                 }
+                /*
+                
+                */
 
                 override fun onError(throwable: Throwable) {
+                    val msg = throwable.message ?: ""
                     val error = if (throwable is CancellationException) {
                         // From Gallery: CancellationException is a normal stop
                         Log.i(TAG, "Inference cancelled")
                         ErrorTaxonomy.TransientErr("Inference cancelled", throwable)
+                    } else if (msg.contains("Failed to parse tool calls", ignoreCase = true)) {
+                        Log.w(TAG, "Inference parse error: $msg")
+                        ErrorTaxonomy.LogicErr("Syntax error parsing tool call: $msg", throwable)
                     } else {
-                        Log.e(TAG, "Inference error: ${throwable.message}", throwable)
-                        ErrorTaxonomy.FatalErr("Inference error: ${throwable.message}", throwable)
+                        Log.e(TAG, "Inference error: $msg", throwable)
+                        ErrorTaxonomy.FatalErr("Inference error: $msg", throwable)
                     }
 
                     EventLogger.emit(GenieEvent.ErrorOccurred(error, "GenieEngine.sendMessageAsync"))
@@ -242,17 +261,14 @@ class GenieEngine {
             conversation?.close()
 
             val eng = engine ?: return
-            val newConversation = eng.createConversation(
-                ConversationConfig(
-                    samplerConfig = SamplerConfig(
-                        topK = 10,
-                        topP = 0.95,
-                        temperature = 0.7,
-                    ),
+            val newConversation = createConversationWithConstrainedDecoding(
+                engine = eng,
+                conversationConfig = ConversationConfig(
+                    samplerConfig = agentSamplerConfig(),
                     systemInstruction = PromptFormatting.buildSystemInstruction(systemPrompt),
                     tools = tools,
                     automaticToolCalling = false,
-                )
+                ),
             )
             conversation = newConversation
             Log.d(TAG, "Conversation reset complete")
@@ -298,4 +314,25 @@ class GenieEngine {
      * Check if the engine is ready for inference.
      */
     fun isReady(): Boolean = isInitialized && engine != null && conversation != null
+
+    private fun agentSamplerConfig(): SamplerConfig {
+        return SamplerConfig(
+            topK = AGENT_TOP_K,
+            topP = AGENT_TOP_P,
+            temperature = AGENT_TEMPERATURE,
+        )
+    }
+
+    @OptIn(ExperimentalApi::class)
+    private fun createConversationWithConstrainedDecoding(
+        engine: Engine,
+        conversationConfig: ConversationConfig,
+    ): Conversation {
+        return try {
+            ExperimentalFlags.enableConversationConstrainedDecoding = true
+            engine.createConversation(conversationConfig)
+        } finally {
+            ExperimentalFlags.enableConversationConstrainedDecoding = false
+        }
+    }
 }

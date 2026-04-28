@@ -116,18 +116,18 @@ class MainActivity : ComponentActivity() {
 
     private val allPermissionsGranted = mutableStateOf(false)
     private val downloadManager by lazy { ModelDownloadManager(applicationContext) }
+    private var storageSettingsLaunchInProgress = false
 
-    private val audioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { _ -> recheckPermissions() }
-
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { _ -> recheckPermissions() }
+    private val runtimePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { continuePermissionFlowAfterRuntimePermissions() }
 
     private val manageStorageLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { recheckPermissions() }
+    ) {
+        storageSettingsLaunchInProgress = false
+        recheckPermissions()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -144,7 +144,7 @@ class MainActivity : ComponentActivity() {
 
         VisualizerSceneStore.initialize(applicationContext)
         ScreenMapStore.initialize(applicationContext)
-        requestAllPermissions()
+        startPermissionFlow()
 
         setContent {
             val isDark = isSystemInDarkTheme()
@@ -165,40 +165,66 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestAllPermissions() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        startPermissionFlow()
+    }
+
+    private fun startPermissionFlow() {
+        val missingRuntimePermissions = buildList {
+            if (!hasAudioPermission()) {
+                add(Manifest.permission.RECORD_AUDIO)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission()) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        if (!Environment.isExternalStorageManager()) {
+
+        if (missingRuntimePermissions.isNotEmpty()) {
+            runtimePermissionLauncher.launch(missingRuntimePermissions.toTypedArray())
+            return
+        }
+
+        if (!Environment.isExternalStorageManager() && !storageSettingsLaunchInProgress) {
+            storageSettingsLaunchInProgress = true
             val intent = Intent(
                 Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                 Uri.parse("package:$packageName"),
             )
             manageStorageLauncher.launch(intent)
+            return
         }
+
         recheckPermissions()
     }
 
+    private fun continuePermissionFlowAfterRuntimePermissions() {
+        if (hasAudioPermission() && hasNotificationPermission()) {
+            startPermissionFlow()
+        } else {
+            recheckPermissions()
+        }
+    }
+
     private fun recheckPermissions() {
-        val hasAudio = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        val hasNotifications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        } else true
+        val hasAudio = hasAudioPermission()
+        val hasNotifications = hasNotificationPermission()
         val hasStorage = Environment.isExternalStorageManager()
         allPermissionsGranted.value = hasAudio && hasNotifications && hasStorage
         Log.d(TAG, "Permissions: audio=$hasAudio, notif=$hasNotifications, storage=$hasStorage")
+    }
+
+    private fun hasAudioPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
     }
 }
 

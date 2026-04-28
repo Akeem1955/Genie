@@ -18,6 +18,12 @@ class PlannerToolSchema : ToolSet {
     fun click(@ToolParam(description = "The exact text or content description of the target element.") target: String) =
         declared()
 
+    @Tool(description = "Tap a screen coordinate using normalized Android coordinates. Use after take_screenshot when a control is visible but not accessible by text.")
+    fun tap_at(
+        @ToolParam(description = "Normalized x coordinate from 0 to 1000. 0 is the left edge, 1000 is the right edge.") x: String,
+        @ToolParam(description = "Normalized y coordinate from 0 to 1000. 0 is the top edge, 1000 is the bottom edge.") y: String,
+    ) = declared()
+
     @Tool(description = "Type text into the currently focused input field.")
     fun type_text(@ToolParam(description = "The text to type into the focused field.") text: String) =
         declared()
