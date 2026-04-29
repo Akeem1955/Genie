@@ -156,7 +156,8 @@ class Planner(
         val excerpt = rawText.take(120)
         Log.w(TAG, "Plain text returned in native tool-calling mode: $excerpt")
         return PlanResult.ParseError(
-            "Model returned plain text instead of a tool call. Use a tool call or finish_task."
+            message = "Model returned plain text instead of a tool call. Use a tool call or finish_task.",
+            rawText = rawText,
         )
     }
 
@@ -202,6 +203,9 @@ class Planner(
 
 sealed class PlanResult {
     data class Success(val decision: Decision) : PlanResult()
-    data class ParseError(val message: String) : PlanResult()
+    data class ParseError(
+        val message: String,
+        val rawText: String? = null,
+    ) : PlanResult()
     data class Error(val message: String) : PlanResult()
 }

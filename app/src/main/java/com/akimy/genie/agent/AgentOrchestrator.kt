@@ -154,7 +154,9 @@ class AgentOrchestrator(
         if (allowSkillLookup) {
             when (val skillMatch = planner.findSkillMatch(goal)) {
                 is SkillMatch.Cached -> {
-                    if (requiresMessagingSend(state) && !cachedPlanHasSendAction(skillMatch.steps)) {
+                    if (skillMatch is SkillMatch.Stored && skillMatch.goalPattern.isGenericMessagingSkillPattern()) {
+                        Log.d(TAG, "Skipping generic messaging skill until entity substitution is available")
+                    } else if (requiresMessagingSend(state) && !cachedPlanHasSendAction(skillMatch.steps)) {
                         Log.d(TAG, "Skipping cached messaging skill because it has no Send action after typing")
                     } else {
                         val unavailableTools = skillMatch.steps
@@ -493,8 +495,14 @@ class AgentOrchestrator(
             }
 
             is PlanResult.ParseError -> {
-                Log.w(TAG, "Plan generation parse error: ${result.message}")
-                fallbackPlan(goal)
+                val plainTextPlan = result.rawText?.let { parseAgentPlan(it) }
+                if (plainTextPlan != null) {
+                    Log.d(TAG, "Parsed generated plan from plain text JSON")
+                    plainTextPlan
+                } else {
+                    Log.w(TAG, "Plan generation parse error: ${result.message}")
+                    fallbackPlan(goal)
+                }
             }
 
             is PlanResult.Error -> {
@@ -1888,8 +1896,9 @@ class AgentOrchestrator(
             if (actSteps.isEmpty()) return
 
             val planJson = json.encodeToString(actSteps)
+            val goalPattern = skillGoalPatternFor(state, actSteps)
             val skill = Skill(
-                goalPattern = state.goal.lowercase().take(100),
+                goalPattern = goalPattern,
                 planJson = planJson,
                 successCount = 1,
             )
@@ -1905,6 +1914,68 @@ class AgentOrchestrator(
         } catch (e: Exception) {
             Log.w(TAG, "Failed to write skill: ${e.message}")
         }
+    }
+
+    private fun skillGoalPatternFor(state: AgentState, actSteps: List<Decision.Act>): String {
+        return if (isSuccessfulWhatsAppMessageSkill(state, actSteps)) {
+            "send whatsapp message"
+        } else {
+            state.goal.lowercase().take(100)
+        }
+    }
+
+    private fun isSuccessfulWhatsAppMessageSkill(
+        state: AgentState,
+        actSteps: List<Decision.Act>,
+    ): Boolean {
+        if (!requiresMessagingSend(state)) return false
+        if (!recentSuccessfulSendAction(state)) return false
+        if (!hasWhatsAppContext(state, actSteps)) return false
+
+        val lastTypeIndex = actSteps.indexOfLast {
+            it.tool == "type_text" && it.args["text"].orEmpty().isNotBlank()
+        }
+        if (lastTypeIndex < 0) return false
+
+        return actSteps
+            .drop(lastTypeIndex + 1)
+            .any { it.isSendAction() }
+    }
+
+    private fun hasWhatsAppContext(
+        state: AgentState,
+        actSteps: List<Decision.Act>,
+    ): Boolean {
+        val intentText = buildString {
+            append(state.goal)
+            append(' ')
+            append(state.intent?.summary.orEmpty())
+            append(' ')
+            state.intent?.entities?.forEach { (key, value) ->
+                append(key)
+                append(' ')
+                append(value)
+                append(' ')
+            }
+        }
+
+        return intentText.contains("whatsapp", ignoreCase = true) ||
+            actSteps.any { step ->
+                step.tool == "open_app" &&
+                    step.args["name"].orEmpty().contains("whatsapp", ignoreCase = true)
+            }
+    }
+
+    private fun Decision.Act.isSendAction(): Boolean {
+        return when (tool) {
+            "click" -> args["target"].orEmpty().isLikelySendTarget()
+            "activate_focused", "tap_at" -> true
+            else -> false
+        }
+    }
+
+    private fun String.isGenericMessagingSkillPattern(): Boolean {
+        return trim().lowercase() == "send whatsapp message"
     }
 
     private fun getHumanReadableToolAction(toolName: String, args: Map<String, String>): Pair<String, String?> {
