@@ -20,7 +20,11 @@ import kotlinx.serialization.Serializable
  */
 data class AgentState(
     val goal: String,
+    var intent: AgentIntent? = null,
+    var plan: AgentPlan? = null,
+    var currentStepIndex: Int = 0,
     val history: MutableList<HistoryEntry> = mutableListOf(),
+    val stepObservations: MutableList<StepObservation> = mutableListOf(),
     var retryCount: Int = 0,
     var replanCount: Int = 0,
     val maxRetries: Int = 3,
@@ -29,10 +33,59 @@ data class AgentState(
 )
 
 /**
+ * The model's structured understanding of the user goal.
+ *
+ * This stays deliberately generic. Genie should not hardcode domains such as
+ * messaging; the planner can extract entities like app, recipient, and message
+ * when they are relevant to the goal.
+ */
+@Serializable
+data class AgentIntent(
+    val summary: String,
+    val entities: Map<String, String> = emptyMap(),
+)
+
+/**
+ * A model-generated plan that the orchestrator executes step by step.
+ */
+@Serializable
+data class AgentPlan(
+    val intent: AgentIntent,
+    val steps: List<PlanStep>,
+)
+
+/**
+ * One plan step. The model still chooses concrete tools, but only for the
+ * current step and preferably from [allowedTools].
+ */
+@Serializable
+data class PlanStep(
+    val instruction: String,
+    val expectedOutcome: String,
+    val allowedTools: List<String> = emptyList(),
+)
+
+/**
+ * Compact execution record for step-level verification and repair.
+ */
+data class StepObservation(
+    val stepIndex: Int,
+    val toolName: String,
+    val outcome: ToolOutcome,
+)
+
+/**
  * An entry in the agent's conversation and action history.
  */
 sealed class HistoryEntry {
     data class UserMessage(val text: String) : HistoryEntry()
+
+    data class PlanCreated(val plan: AgentPlan) : HistoryEntry()
+
+    data class StepCompleted(
+        val stepIndex: Int,
+        val summary: String,
+    ) : HistoryEntry()
 
     data class ModelDecision(val decision: Decision) : HistoryEntry()
 

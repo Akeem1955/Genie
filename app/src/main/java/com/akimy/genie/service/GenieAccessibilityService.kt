@@ -54,6 +54,7 @@ import com.akimy.genie.engine.awaitTerminalDownloadState
 import com.akimy.genie.telemetry.EventLogger
 import com.akimy.genie.telemetry.GenieEvent
 import com.akimy.genie.tools.ToolRegistry
+import com.akimy.genie.tools.ToolProfilePrefs
 import com.akimy.genie.tools.ToolServiceContext
 import com.akimy.genie.tools.BoardStyle
 import com.akimy.genie.tools.ViewportInfo
@@ -264,7 +265,9 @@ class GenieAccessibilityService : AccessibilityService(),
         serviceScope.launch {
             // Step 1: Check model — user must have selected and downloaded via MainActivity
             val modelConfig = ModelPrefs.getSelectedConfig(this@GenieAccessibilityService)
-            val plannerToolProviders = geniePlannerToolProviders()
+            val toolProfile = ToolProfilePrefs.getSelectedProfile(this@GenieAccessibilityService)
+            val plannerToolProviders = geniePlannerToolProviders(toolProfile)
+            Log.d(TAG, "Using tool profile: ${toolProfile.displayName} (${toolProfile.toolNames.size} tools)")
 
             if (modelConfig == null || !modelConfig.isDownloaded(this@GenieAccessibilityService)) {
                 Log.w(TAG, "Model not ready. Selection: ${modelConfig?.displayName}")
@@ -279,7 +282,7 @@ class GenieAccessibilityService : AccessibilityService(),
             val error = genieEngine.initialize(
                 context = this@GenieAccessibilityService,
                 modelPath = modelPath,
-                systemPrompt = PromptBuilder.AGENT_SYSTEM_PROMPT,
+                systemPrompt = PromptBuilder.systemPromptForProfile(toolProfile),
                 tools = plannerToolProviders,
             )
             if (error != null) {
@@ -296,6 +299,7 @@ class GenieAccessibilityService : AccessibilityService(),
             orchestrator = AgentOrchestrator(
                 engine = genieEngine,
                 toolRegistry = toolRegistry,
+                enabledToolNames = toolProfile.toolNames,
                 promptBuilder = PromptBuilder(),
                 planner = planner,
                 factDao = db.factDao(),

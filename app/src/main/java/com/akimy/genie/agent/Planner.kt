@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 
 private const val TAG = "GeniePlanner"
 
@@ -131,10 +132,9 @@ class Planner(
 
     internal fun parseDecision(toolCall: ToolCall): PlanResult {
         if (toolCall.name == "finish_task") {
-            val summary = toolCall.arguments["summary"]
-                ?.toString()
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
+            val summary = stringifyArgument(toolCall.arguments["summary"])
+                .trim()
+                .takeIf { it.isNotEmpty() }
                 ?: return PlanResult.ParseError("finish_task requires a non-empty 'summary'")
             return PlanResult.Success(Decision.Finish(summary))
         }
@@ -165,6 +165,7 @@ class Planner(
             null -> ""
             is String -> value
             is Number, is Boolean -> value.toString()
+            is JsonPrimitive -> value.contentOrNull ?: value.toString()
             is Map<*, *>, is List<*>, is Array<*> -> anyToJson(value).toString()
             else -> value.toString()
         }

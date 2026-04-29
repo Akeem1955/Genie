@@ -70,6 +70,8 @@ import com.akimy.genie.engine.GenieModelConfig
 import com.akimy.genie.engine.ModelDownloadManager
 import com.akimy.genie.engine.ModelPrefs
 import com.akimy.genie.service.ScreenMapStore
+import com.akimy.genie.tools.ToolProfile
+import com.akimy.genie.tools.ToolProfilePrefs
 import com.akimy.genie.tools.VisualizerSceneStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -243,6 +245,9 @@ fun GenieSetupScreen(
     // Persisted model selection
     var selectedModelId by remember {
         mutableStateOf(ModelPrefs.getSelectedModelId(context) ?: GenieModelConfig.DEFAULT.modelId)
+    }
+    var selectedToolProfileId by remember {
+        mutableStateOf(ToolProfilePrefs.getSelectedProfile(context).id)
     }
     val selectedConfig = GenieModelConfig.ALL.firstOrNull { it.modelId == selectedModelId }
         ?: ModelPrefs.getSelectedConfig(context)
@@ -484,6 +489,96 @@ fun GenieSetupScreen(
             ) {
                 Text("Select Local Model (.litertlm)")
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Tool Profile",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+            )
+
+            Text(
+                text = "Messaging is the default optimized loadout. Larger profiles expose more tools but use more model context.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+            )
+
+            ToolProfile.values().forEach { profile ->
+                val isSelected = profile.id == selectedToolProfileId
+                val profileShape = RoundedCornerShape(16.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                        .clip(profileShape)
+                        .background(
+                            if (isSelected)
+                                GeniePrimary.copy(alpha = 0.07f)
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant,
+                        )
+                        .border(
+                            width = if (isSelected) 2.dp else 1.dp,
+                            color = if (isSelected) GeniePrimary else MaterialTheme.colorScheme.outlineVariant,
+                            shape = profileShape,
+                        )
+                        .clickable {
+                            selectedToolProfileId = profile.id
+                            ToolProfilePrefs.setSelectedProfile(context, profile)
+                        }
+                        .padding(16.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = profile.displayName,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "${profile.toolNames.size} tools",
+                            fontSize = 12.sp,
+                            color = if (isSelected) GenieAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = profile.description,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (isSelected) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = profile.toolNames.sorted().joinToString(", "),
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            Text(
+                text = "Profile changes apply when the accessibility service starts or restarts.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+            )
 
             Spacer(modifier = Modifier.height(8.dp))
 
