@@ -203,8 +203,8 @@ class AgentOrchestrator(
                 intent = AgentIntent(summary = "Respond to user conversational query", entities = emptyMap()),
                 steps = listOf(
                     PlanStep(
-                        instruction = "Formulate a response to the user's query or save a fact if necessary.",
-                        expectedOutcome = "User receives an answer or fact is saved.",
+                        instruction = "If the user asks a question, you MUST use the reply tool to answer. Only use save_fact if the user explicitly states a new personal preference.",
+                        expectedOutcome = "User receives a spoken answer via the reply tool, or a new fact is saved.",
                         allowedTools = listOf("reply", "save_fact")
                     )
                 )
