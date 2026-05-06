@@ -229,6 +229,7 @@ object VisualizerSceneStore {
         styleJson: String?,
         stepId: String?,
         animation: String?,
+        pathData: String? = null,
     ): SceneStoreResult {
         val scene = scenes[sceneId]
         val existingBoard = scene?.board ?: TeachingBoard()
@@ -251,6 +252,7 @@ object VisualizerSceneStore {
             style = parsedStyle ?: BoardStyle(),
             stepId = stepId?.trim()?.takeIf { it.isNotEmpty() },
             animation = animation?.trim()?.take(40),
+            pathData = pathData?.trim()?.take(2_000),
         )
         val updatedBoard = normalizeBoard(
             existingBoard.copy(objects = existingBoard.objects + newObject)
@@ -543,8 +545,7 @@ object VisualizerSceneStore {
     }
 
     private fun parseBoardStyle(raw: String?): BoardStyle? {
-        if (raw == null) return null
-        if (raw.isBlank()) return BoardStyle()
+        if (raw.isNullOrBlank()) return BoardStyle()
         return runCatching { json.decodeFromString<BoardStyle>(raw) }.getOrNull()
     }
 

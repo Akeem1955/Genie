@@ -113,6 +113,12 @@ sealed class Decision {
     data class Finish(
         val summary: String,
     ) : Decision()
+
+    @Serializable
+    @SerialName("reply")
+    data class Reply(
+        val message: String,
+    ) : Decision()
 }
 
 /**

@@ -273,7 +273,7 @@ flowchart TD
 
     C -->|BuiltIn or Stored skill| D[executeCachedPlan\nstep through cached Decision.Act list]
     D --> D1{all steps succeeded?}
-    D1 -->|yes| Z[finish_task summary\nresume wake-word listening]
+    D1 -->|yes| Z[tasks plan\nresume wake-word listening]
     D1 -->|no| E
 
     C -->|no match| E
@@ -314,7 +314,7 @@ This means the LLM always sees the goal and the most recent context, even during
 
 ### The Prompt
 
-The system prompt in `PromptBuilder.AGENT_SYSTEM_PROMPT` forces the model to emit **exactly one native LiteRT-LM tool call per turn**. Plain text during planning is treated as invalid. Goal completion is represented as a `finish_task(summary=...)` tool call, which the planner maps into `Decision.Finish`.
+The system prompt in `PromptBuilder.AGENT_SYSTEM_PROMPT` forces the model to emit **exactly one native LiteRT-LM tool call per turn**. Plain text during planning is treated as invalid. Goal completion is represented as a `tasks(plan=...)` tool call, which the planner maps into `Decision.Finish`.
 
 The prompt also injects explicit behavior rules for accessibility-aware exploration tools, continuous-reader tools, screen-map memory tools, visualizer/teaching-board tools, and annotation tools.
 
@@ -713,7 +713,7 @@ flowchart TD
     K --> L[RiskAssessor + optional HITL biometric]
     L --> M[Tool executes in AccessibilityService]
     M --> N[Append ToolOutcome to history]
-    N --> O{finish_task?}
+    N --> O{tasks?}
     O -->|no| G
     O -->|yes| P[TTS summary]
 

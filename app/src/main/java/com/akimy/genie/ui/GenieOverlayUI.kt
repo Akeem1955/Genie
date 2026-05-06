@@ -250,25 +250,49 @@ fun ExecutingPill(title: String, subtitle: String?) {
 
 @Composable
 fun SpeakingPill(text: String) {
-    Row(
+    val infiniteTransition = rememberInfiniteTransition(label = "speak_pulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = EaseInOutSine),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha_anim"
+    )
+
+    Box(
         modifier = Modifier
-            .shadow(12.dp, RoundedCornerShape(24.dp))
-            .clip(RoundedCornerShape(24.dp))
+            .fillMaxWidth(0.85f) // Take up to 85% width for a chat bubble look
+            .shadow(16.dp, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 4.dp))
+            .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 4.dp))
             .background(OverlayBackground)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+            .drawBehind {
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(GenieBlue.copy(alpha = alpha * 0.5f), GeniePrimary.copy(alpha = alpha * 0.5f))
+                    )
+                )
+            }
+            .padding(horizontal = 20.dp, vertical = 16.dp)
     ) {
-        Text(
-            text = "🔊",
-            fontSize = 16.sp
-        )
-        Text(
-            text = text.take(60) + if (text.length > 60) "..." else "",
-            color = TextPrimary,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium
-        )
+        Row(
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "🔊",
+                fontSize = 18.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Text(
+                text = text,
+                color = TextPrimary,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Medium,
+                lineHeight = 22.sp
+            )
+        }
     }
 }
 @Composable

@@ -33,7 +33,7 @@ private val SCREEN_AWARENESS_TOOLS = setOf(
 
 private val UI_INTERACTION_TOOLS = setOf(
     "click",
-    "tap_at",
+    "click_element_by_id",
     "focus_by_text",
     "focus_by_role",
     "focus_first",
@@ -81,6 +81,8 @@ private val READER_TOOLS = setOf(
 
 private val DOCUMENT_TOOLS = setOf(
     "read_pdf_page_range",
+    "list_device_pdfs",
+    "detect_open_pdf",
 )
 
 enum class ToolProfile(
@@ -94,6 +96,7 @@ enum class ToolProfile(
         displayName = "Messaging",
         description = "Lean loadout for chat, search, typing, sending, and basic recovery.",
         toolNames = setOf(
+            "reply",
             "open_app",
             "read_screen",
             "read_screen_summary",
@@ -104,12 +107,14 @@ enum class ToolProfile(
             "focus_next",
             "activate_focused",
             "type_text",
-            "tap_at",
+            "click_element_by_id",
             "take_screenshot",
             "go_back",
             "go_home",
             "scroll",
             "swipe",
+            "save_fact",
+            "retrieve_fact",
         ),
     ),
 
@@ -118,6 +123,7 @@ enum class ToolProfile(
         displayName = "Screen Control",
         description = "General Android navigation and UI operation without teaching or document tools.",
         toolNames = setOf(
+            "reply",
             "open_app",
             "go_back",
             "go_home",
@@ -137,8 +143,21 @@ enum class ToolProfile(
             "focus_previous",
             "activate_focused",
             "type_text",
-            "tap_at",
+            "click_element_by_id",
             "take_screenshot",
+            "save_fact",
+            "retrieve_fact",
+        ),
+    ),
+
+    SeeAndTap(
+        id = "see_and_tap",
+        displayName = "See And Tap",
+        description = "Isolated visual grounding profile: take a screenshot, then tap boxed items using click_element_by_id.",
+        toolNames = setOf(
+            "reply",
+            "take_screenshot",
+            "click_element_by_id",
         ),
     ),
 
@@ -147,6 +166,7 @@ enum class ToolProfile(
         displayName = "Reader",
         description = "Screen reading, context awareness, notifications, forms, and narration.",
         toolNames = setOf(
+            "reply",
             "read_screen",
             "read_screen_summary",
             "where_am_i",
@@ -169,6 +189,7 @@ enum class ToolProfile(
         displayName = "Teaching",
         description = "Visualizer and board tools for explanations and step-by-step lessons.",
         toolNames = setOf(
+            "reply",
             "visualize_concept",
             "teach_with_board",
             "board_add_object",
@@ -182,21 +203,22 @@ enum class ToolProfile(
         id = "annotation",
         displayName = "Annotation",
         description = "Screen annotation, labels, boxes, pointers, screenshots, and basic navigation.",
-        toolNames = ANNOTATION_TOOLS + setOf("take_screenshot", "read_screen"),
+        toolNames = ANNOTATION_TOOLS + setOf("reply", "take_screenshot", "read_screen"),
     ),
 
     Document(
         id = "document",
         displayName = "Document",
         description = "PDF reading with compact screen awareness and memory helpers.",
-        toolNames = DOCUMENT_TOOLS + setOf("read_screen", "save_fact", "retrieve_fact"),
+        toolNames = DOCUMENT_TOOLS + setOf("reply", "read_screen", "save_fact", "retrieve_fact"),
     ),
 
     General(
         id = "general",
         displayName = "General",
         description = "All tools. Useful for exploration, but heavier for the model.",
-        toolNames = CORE_NAVIGATION_TOOLS +
+        toolNames = setOf("reply") +
+            CORE_NAVIGATION_TOOLS +
             SCREEN_AWARENESS_TOOLS +
             UI_INTERACTION_TOOLS +
             MEMORY_TOOLS +
@@ -204,6 +226,16 @@ enum class ToolProfile(
             ANNOTATION_TOOLS +
             READER_TOOLS +
             DOCUMENT_TOOLS,
+    ),
+
+    Chat(
+        id = "chat",
+        displayName = "Chat",
+        description = "Conversational assistant for answering general questions and remembering facts about the user.",
+        toolNames = setOf(
+            "reply",
+            "save_fact",
+        ),
     );
 
     companion object {

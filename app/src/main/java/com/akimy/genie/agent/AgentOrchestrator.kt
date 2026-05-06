@@ -19,6 +19,7 @@ import com.akimy.genie.tools.RiskAssessor
 import com.akimy.genie.tools.RiskVerdict
 import com.akimy.genie.tools.SceneStoreResult
 import com.akimy.genie.tools.ToolRegistry
+import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolServiceContext
 import com.akimy.genie.tools.VisualizerSceneStore
 import kotlinx.serialization.decodeFromString
@@ -40,7 +41,7 @@ private const val MAX_SANITIZED_PLANNER_ERROR_CHARS = 220
 private val SCENE_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
 private val OBJECT_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
 private val ALLOWED_DIAGRAM_TYPES = setOf("flowchart", "cycle", "timeline", "mindmap", "table")
-private val ALLOWED_BOARD_OBJECT_TYPES = setOf("title", "text", "box", "card", "circle", "line", "arrow", "code")
+private val ALLOWED_BOARD_OBJECT_TYPES = setOf("title", "text", "box", "card", "circle", "line", "arrow", "code", "path")
 
 @Serializable
 private data class GeneratedAgentPlan(
@@ -74,6 +75,7 @@ class AgentOrchestrator(
     private val factDao: FactDao,
     private val skillDao: SkillDao,
     private val appContext: Context,
+    private val toolProfile: ToolProfile? = null,
 ) {
     private val slidingWindowManager = SlidingWindowManager()
     private val json = Json {
@@ -87,6 +89,9 @@ class AgentOrchestrator(
         .ifEmpty { toolRegistry.getToolNames() }
     private val annotationPlaybackBySession = ConcurrentHashMap<String, MutableList<AnnotationPlaybackOp>>()
     private val annotationSessionTitle = ConcurrentHashMap<String, String>()
+
+    // Maintain up to 10 back-and-forth turns for the Chat profile (20 entries total)
+    private val persistentChatHistory = mutableListOf<HistoryEntry>()
 
     private sealed class AnnotationPlaybackOp {
         abstract val delayMs: Long
@@ -149,6 +154,9 @@ class AgentOrchestrator(
         EventLogger.emit(GenieEvent.StateTransition("idle", "planning"))
 
         val state = AgentState(goal = goal, isNovelPlan = isNovelPlan)
+        if (toolProfile == ToolProfile.Chat) {
+            state.history.addAll(persistentChatHistory)
+        }
         state.history.add(HistoryEntry.UserMessage(goal))
 
         if (allowSkillLookup) {
@@ -186,12 +194,43 @@ class AgentOrchestrator(
         }
 
         val initialFacts = loadFactsSnapshot()
-        val initialPlan = generatePlan(
-            goal = goal,
-            facts = initialFacts,
-            previousState = null,
-            repairReason = null,
-        )
+        var initialPlan: AgentPlan? = null
+        var initialPlanRetries = 0
+        var repairReason: String? = null
+
+        if (toolProfile == ToolProfile.Chat) {
+            initialPlan = AgentPlan(
+                intent = AgentIntent(summary = "Respond to user conversational query", entities = emptyMap()),
+                steps = listOf(
+                    PlanStep(
+                        instruction = "Formulate a response to the user's query or save a fact if necessary.",
+                        expectedOutcome = "User receives an answer or fact is saved.",
+                        allowedTools = listOf("reply", "save_fact")
+                    )
+                )
+            )
+        } else {
+            while (initialPlan == null && initialPlanRetries < 2) {
+                initialPlan = generatePlan(
+                    goal = goal,
+                    facts = initialFacts,
+                    previousState = null,
+                    repairReason = repairReason,
+                )
+                if (initialPlan == null) {
+                    repairReason = "Previous attempt returned malformed JSON or failed to parse. Please ensure valid JSON formatting matching the schema exactly."
+                    initialPlanRetries++
+                    Log.w(TAG, "Initial plan generation failed, retrying ($initialPlanRetries/2)...")
+                }
+            }
+        }
+
+        if (initialPlan == null) {
+            val message = "Failed: plan generation error after retries"
+            Log.w(TAG, "Planning failed; ending without fallback")
+            onStatusUpdate("Planning failed. Ending without fallback.")
+            return@withContext message
+        }
         state.intent = initialPlan.intent
         state.plan = initialPlan
         state.currentStepIndex = 0
@@ -228,6 +267,7 @@ class AgentOrchestrator(
                 state = state,
                 injectedFacts = facts,
                 hasVisionInput = visionInputsForTurn.isNotEmpty(),
+                toolProfile = toolProfile,
             )
 
             EventLogger.emit(GenieEvent.StateTransition("building_prompt", "planning"))
@@ -296,6 +336,12 @@ class AgentOrchestrator(
                                             previousState = state,
                                             repairReason = "Current step failed after retries: ${outcome.message}",
                                         )
+                                        if (repairedPlan == null) {
+                                            val message = "Failed: plan generation error"
+                                            Log.w(TAG, "Planning failed during retry repair; ending without fallback")
+                                            onStatusUpdate("Planning failed. Ending without fallback.")
+                                            return@withContext message
+                                        }
                                         state.plan = repairedPlan
                                         state.intent = repairedPlan.intent
                                         state.currentStepIndex = 0
@@ -324,6 +370,12 @@ class AgentOrchestrator(
                                             previousState = state,
                                             repairReason = "Current step hit repeated logic errors: ${outcome.message}",
                                         )
+                                        if (repairedPlan == null) {
+                                            val message = "Failed: plan generation error"
+                                            Log.w(TAG, "Planning failed during logic repair; ending without fallback")
+                                            onStatusUpdate("Planning failed. Ending without fallback.")
+                                            return@withContext message
+                                        }
                                         state.plan = repairedPlan
                                         state.intent = repairedPlan.intent
                                         state.currentStepIndex = 0
@@ -371,14 +423,14 @@ class AgentOrchestrator(
                                 return@withContext decision.summary
                             }
 
-                            when (val finishError = stepFinishPreconditionError(state)) {
+                            when (val finishError = stepFinishPreconditionError(state, decision.summary)) {
                                 null -> {
                                     val completedIndex = state.currentStepIndex
                                     state.history.add(HistoryEntry.StepCompleted(completedIndex, decision.summary))
                                     state.stepObservations.add(
                                         StepObservation(
                                             stepIndex = completedIndex,
-                                            toolName = "finish_task",
+                                            toolName = "tasks",
                                             outcome = ToolOutcome.Ok(decision.summary),
                                         )
                                     )
@@ -392,12 +444,12 @@ class AgentOrchestrator(
                                     val outcome = ToolOutcome.LogicErr(finishError)
                                     state.history.add(
                                         HistoryEntry.ToolResult(
-                                            "finish_task",
-                                            mapOf("summary" to decision.summary),
+                                            "tasks",
+                                            mapOf("plan" to decision.summary),
                                             outcome,
                                         )
                                     )
-                                    recordStepObservation(state, "finish_task", outcome)
+                                    recordStepObservation(state, "tasks", outcome)
                                     if (state.replanCount < state.maxReplans) {
                                         Log.d(
                                             TAG,
@@ -413,14 +465,34 @@ class AgentOrchestrator(
                                             repairReason = finishError,
                                         )
                                         state.plan = repairedPlan
-                                        state.intent = repairedPlan.intent
+                                        state.intent = repairedPlan?.intent
                                         state.currentStepIndex = 0
                                         state.retryCount = 0
                                         state.replanCount = 0
-                                        state.history.add(HistoryEntry.PlanCreated(repairedPlan))
+                                        state.history.add(HistoryEntry.PlanCreated(repairedPlan!!))
                                     }
                                 }
                             }
+                        }
+
+                        is Decision.Reply -> {
+                            Log.d(TAG, "=== Goal Complete (Replied): ${decision.message} ===")
+                            EventLogger.emit(GenieEvent.StateTransition("executing", "replied"))
+                            
+                            if (state.isNovelPlan) {
+                                writeSkill(state)
+                            }
+                            
+                            if (toolProfile == ToolProfile.Chat) {
+                                persistentChatHistory.add(HistoryEntry.UserMessage(goal))
+                                persistentChatHistory.add(HistoryEntry.ModelDecision(decision))
+                                while (persistentChatHistory.size > 20) {
+                                    persistentChatHistory.removeAt(0)
+                                }
+                            }
+                            
+                            onStatusUpdate(decision.message)
+                            return@withContext decision.message
                         }
                     }
                 }
@@ -445,6 +517,12 @@ class AgentOrchestrator(
                             previousState = state,
                             repairReason = "Planner repeatedly returned invalid tool calls: $correction",
                         )
+                        if (repairedPlan == null) {
+                            val message = "Failed: plan generation error"
+                            Log.w(TAG, "Planning failed during repair; ending without fallback")
+                            onStatusUpdate("Planning failed. Ending without fallback.")
+                            return@withContext message
+                        }
                         state.plan = repairedPlan
                         state.intent = repairedPlan.intent
                         state.currentStepIndex = 0
@@ -472,13 +550,19 @@ class AgentOrchestrator(
         facts: List<String>,
         previousState: AgentState?,
         repairReason: String?,
-    ): AgentPlan {
+    ): AgentPlan? {
         val prompt = if (previousState == null) {
-            promptBuilder.buildPlanPrompt(
+            val basePrompt = promptBuilder.buildPlanPrompt(
                 goal = goal,
                 injectedFacts = facts,
                 availableTools = validToolNames(includeFinish = true),
+                toolProfile = toolProfile,
             )
+            if (repairReason != null) {
+                "$basePrompt\n\n## Repair Context\nReason: $repairReason\nCreate a revised plan ensuring perfectly valid JSON."
+            } else {
+                basePrompt
+            }
         } else {
             buildRepairPlanPrompt(goal, facts, previousState, repairReason)
         }
@@ -488,9 +572,9 @@ class AgentOrchestrator(
                 val finish = result.decision as? Decision.Finish
                 if (finish == null) {
                     Log.w(TAG, "Plan generation returned action instead of plan: ${result.decision}")
-                    fallbackPlan(goal)
+                    null
                 } else {
-                    parseAgentPlan(finish.summary) ?: fallbackPlan(goal)
+                    parseAgentPlan(finish.summary)
                 }
             }
 
@@ -501,32 +585,15 @@ class AgentOrchestrator(
                     plainTextPlan
                 } else {
                     Log.w(TAG, "Plan generation parse error: ${result.message}")
-                    fallbackPlan(goal)
+                    null
                 }
             }
 
             is PlanResult.Error -> {
                 Log.w(TAG, "Plan generation error: ${result.message}")
-                fallbackPlan(goal)
+                null
             }
         }
-    }
-
-    private fun fallbackPlan(goal: String): AgentPlan {
-        val tools = validToolNames(includeFinish = false).sorted()
-        return AgentPlan(
-            intent = AgentIntent(
-                summary = "Complete the user goal: $goal",
-                entities = emptyMap(),
-            ),
-            steps = listOf(
-                PlanStep(
-                    instruction = "Inspect the current screen and complete the user's goal safely.",
-                    expectedOutcome = "The user's goal is completed or a clear blocking reason is found.",
-                    allowedTools = tools,
-                )
-            ),
-        )
     }
 
     private fun buildRepairPlanPrompt(
@@ -536,7 +603,7 @@ class AgentOrchestrator(
         repairReason: String?,
     ): String {
         val sb = StringBuilder()
-        sb.append(promptBuilder.buildPlanPrompt(goal, facts, validToolNames(includeFinish = true)))
+        sb.append(promptBuilder.buildPlanPrompt(goal, facts, validToolNames(includeFinish = true), toolProfile))
         sb.appendLine()
         sb.appendLine("## Repair Context")
         if (!repairReason.isNullOrBlank()) {
@@ -693,6 +760,21 @@ class AgentOrchestrator(
                 verifiesInput && formStateHasFocusedInput(resultText)
             }
 
+            "take_screenshot" -> {
+                resultText.contains("screenshot captured") &&
+                    "take_screenshot" in step.allowedTools &&
+                    "tap_at" !in step.allowedTools &&
+                    (stepText.contains("screenshot") || stepText.contains("screen") || stepText.contains("visual"))
+            }
+
+            "save_fact" -> {
+                resultText.contains("saved fact")
+            }
+
+            "retrieve_fact" -> {
+                resultText.contains("=") || resultText.contains("no fact found")
+            }
+
             else -> false
         }
 
@@ -730,6 +812,7 @@ class AgentOrchestrator(
             is HistoryEntry.ModelDecision -> when (val decision = entry.decision) {
                 is Decision.Act -> "called ${decision.tool}(${decision.args})"
                 is Decision.Finish -> "step finish: ${decision.summary}"
+                is Decision.Reply -> "replied: ${decision.message}"
             }
             is HistoryEntry.ToolResult -> "${entry.toolName}: ${compactOutcome(entry.outcome)}"
         }.replace(Regex("\\s+"), " ").take(360)
@@ -887,7 +970,19 @@ class AgentOrchestrator(
         return null
     }
 
-    private fun stepFinishPreconditionError(state: AgentState): String? {
+    private fun stepFinishPreconditionError(state: AgentState, finishSummary: String): String? {
+        // If running in SeeAndTap profile, skip finish precondition enforcement.
+        // Visual verification is brittle on Android; allow the planner to claim step completion.
+        if (toolProfile == ToolProfile.SeeAndTap) return null
+
+        if (
+            requiresTapActivation(state) &&
+            !recentSuccessfulActivationAction(state) &&
+            !finishSummaryIndicatesBlockingReason(finishSummary)
+        ) {
+            return "Tap finish precondition failed: the goal cannot finish until a tap/click/activation action succeeds after visual inspection."
+        }
+
         if (!requiresMessagingSend(state)) return null
 
         val plan = state.plan ?: return null
@@ -910,6 +1005,54 @@ class AgentOrchestrator(
         }
 
         return null
+    }
+
+    private fun requiresTapActivation(state: AgentState): Boolean {
+        val goal = state.goal.lowercase()
+        val intentText = buildString {
+            append(state.intent?.summary.orEmpty())
+            append(' ')
+            state.intent?.entities?.forEach { (key, value) ->
+                append(key)
+                append(' ')
+                append(value)
+                append(' ')
+            }
+        }.lowercase()
+        val combined = "$goal $intentText"
+        return combined.containsAny(
+            "tap ",
+            "tap on",
+            "click ",
+            "click on",
+            "press ",
+            "press on",
+        )
+    }
+
+    private fun recentSuccessfulActivationAction(state: AgentState): Boolean {
+        return state.history
+            .asReversed()
+            .take(12)
+            .filterIsInstance<HistoryEntry.ToolResult>()
+            .any {
+                it.outcome is ToolOutcome.Ok &&
+                    it.toolName in setOf("tap_at", "click", "activate_focused", "open_app")
+            }
+    }
+
+    private fun finishSummaryIndicatesBlockingReason(summary: String): Boolean {
+        val normalized = summary.lowercase()
+        return normalized.containsAny(
+            "blocked",
+            "cannot",
+            "can't",
+            "could not",
+            "couldn't",
+            "not found",
+            "not visible",
+            "unable",
+        )
     }
 
     private fun isGenericFallbackPlan(state: AgentState): Boolean {
@@ -1066,7 +1209,7 @@ class AgentOrchestrator(
     }
 
     private fun validToolNames(includeFinish: Boolean): Set<String> {
-        return if (includeFinish) activeToolNames + "finish_task" else activeToolNames
+        return if (includeFinish) activeToolNames + "tasks" else activeToolNames
     }
 
     private fun levenshteinDistance(left: String, right: String): Int {
@@ -1137,6 +1280,14 @@ class AgentOrchestrator(
 
             toolName == "read_pdf_page_range" -> {
                 readPdfPageRange(args)
+            }
+
+            toolName == "list_device_pdfs" -> {
+                listDevicePdfs()
+            }
+
+            toolName == "detect_open_pdf" -> {
+                detectOpenPdf(serviceContext)
             }
 
             toolName == "visualize_concept" -> {
@@ -1214,9 +1365,19 @@ class AgentOrchestrator(
         toolName: String,
         args: Map<String, String>,
     ): ToolOutcome {
+        Log.d(TAG, "━━━ handleTeachingBoardTool ENTER ━━━")
+        Log.d(TAG, "  tool: $toolName")
+        args.forEach { (key, value) ->
+            Log.d(TAG, "  arg[$key]: ${value.take(300)}")
+        }
+
         val sceneId = args["scene_id"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'scene_id' argument")
+        if (sceneId.isNullOrBlank()) {
+            Log.e(TAG, "  FAIL: Missing 'scene_id'. Raw value: '${args["scene_id"]}'")
+            return ToolOutcome.LogicErr("Missing 'scene_id' argument")
+        }
         if (!SCENE_ID_PATTERN.matches(sceneId)) {
+            Log.e(TAG, "  FAIL: Invalid 'scene_id' pattern. Raw: '$sceneId'")
             return ToolOutcome.LogicErr("Invalid 'scene_id'. Use 1-64 chars: letters, numbers, underscore, hyphen")
         }
 
@@ -1260,6 +1421,10 @@ class AgentOrchestrator(
                     ?: if (args["width"].isNullOrBlank()) null else return ToolOutcome.LogicErr("Invalid 'width' argument")
                 val height = args["height"]?.trim()?.takeIf { it.isNotEmpty() }?.toFloatOrNull()
                     ?: if (args["height"].isNullOrBlank()) null else return ToolOutcome.LogicErr("Invalid 'height' argument")
+                val rawStyleJson = args["style"]?.takeIf { it.isNotBlank() }?.take(4_000)
+                Log.d(TAG, "  board_add_object parsed: id=$objectId type=$objectType x=$x y=$y w=$width h=$height")
+                Log.d(TAG, "  board_add_object style JSON: '$rawStyleJson'")
+                Log.d(TAG, "  board_add_object stepId=${args["step_id"]} animation=${args["animation"]}")
                 VisualizerSceneStore.boardAddObject(
                     sceneId = sceneId,
                     objectId = objectId,
@@ -1269,9 +1434,10 @@ class AgentOrchestrator(
                     y = y,
                     width = width,
                     height = height,
-                    styleJson = args["style"]?.takeIf { it.isNotBlank() }?.take(4_000),
+                    styleJson = rawStyleJson,
                     stepId = args["step_id"]?.trim()?.takeIf { it.isNotEmpty() },
                     animation = args["animation"]?.trim()?.takeIf { it.isNotEmpty() }?.take(40),
+                    pathData = args["path_data"]?.takeIf { it.isNotBlank() }?.take(2_000),
                 )
             }
 
@@ -1353,6 +1519,8 @@ class AgentOrchestrator(
             else -> return ToolOutcome.LogicErr("Unknown teaching board tool '$toolName'")
         }
 
+        Log.d(TAG, "  result: ok=${result.ok}, msg=${result.message.take(200)}")
+        Log.d(TAG, "━━━ handleTeachingBoardTool EXIT ━━━")
         return if (result.ok) ToolOutcome.Ok(result.message) else ToolOutcome.LogicErr(result.message)
     }
 
@@ -1805,6 +1973,59 @@ class AgentOrchestrator(
         }
     }
 
+    private suspend fun listDevicePdfs(): ToolOutcome = withContext(Dispatchers.IO) {
+        val dirs = listOf(
+            "/storage/emulated/0/Download",
+            "/storage/emulated/0/Documents",
+            "/storage/emulated/0/DCIM",
+        )
+        val pdfs = mutableListOf<File>()
+        dirs.forEach { dir ->
+            File(dir).listFiles()?.filter { it.extension.equals("pdf", true) }?.let { pdfs.addAll(it) }
+        }
+        if (pdfs.isEmpty()) {
+            return@withContext ToolOutcome.Ok("No PDF files found on device.")
+        }
+        val sb = StringBuilder("Found ${pdfs.size} PDF(s):\n")
+        pdfs.take(30).forEachIndexed { i, f ->
+            sb.appendLine("${i + 1}. ${f.name} (${f.length() / 1024}KB) — ${f.absolutePath}")
+        }
+        ToolOutcome.Ok(sb.toString().trim())
+    }
+
+    private suspend fun detectOpenPdf(serviceContext: ToolServiceContext): ToolOutcome {
+        val screenText = serviceContext.readScreenText()
+        val screenSummary = serviceContext.readScreenSummary()
+        val combined = "$screenText\n$screenSummary"
+
+        val pdfPattern = Regex("""([\w\s\-_.]+\.pdf)""", RegexOption.IGNORE_CASE)
+        val matches = pdfPattern.findAll(combined).map { it.value.trim() }.distinct().toList()
+
+        if (matches.isEmpty()) {
+            return ToolOutcome.Ok("No PDF detected on screen. Open a PDF in any viewer app, then try again.")
+        }
+
+        val dirs = listOf("/storage/emulated/0/Download", "/storage/emulated/0/Documents", "/storage/emulated/0/DCIM")
+        val resolved = mutableListOf<String>()
+        for (name in matches) {
+            for (dir in dirs) {
+                val candidate = File(dir, name.trim())
+                if (candidate.exists() && candidate.isFile) { resolved.add(candidate.absolutePath); break }
+            }
+        }
+
+        val sb = StringBuilder("PDF detected on screen:\n")
+        matches.forEach { sb.appendLine("  Filename: $it") }
+        if (resolved.isNotEmpty()) {
+            sb.appendLine("Resolved path(s):")
+            resolved.forEach { sb.appendLine("  $it") }
+            sb.appendLine("\nUse read_pdf_page_range with file_path=\"${resolved.first()}\" to read it.")
+        } else {
+            sb.appendLine("Could not resolve file path. Use list_device_pdfs to find it by name.")
+        }
+        return ToolOutcome.Ok(sb.toString().trim())
+    }
+
     private suspend fun executeCachedPlan(
         state: AgentState,
         skillMatch: SkillMatch.Cached,
@@ -1823,15 +2044,9 @@ class AgentOrchestrator(
                 is ToolOutcome.Ok -> Unit
 
                 is ToolOutcome.TransientErr, is ToolOutcome.LogicErr -> {
-                    Log.w(TAG, "Cached plan step failed: ${step.tool}, falling back to live planning")
-                    return executeGoalInternal(
-                        goal = state.goal,
-                        serviceContext = serviceContext,
-                        onStatusUpdate = onStatusUpdate,
-                        onToolExecuting = onToolExecuting,
-                        allowSkillLookup = false,
-                        isNovelPlan = false,
-                    )
+                    Log.w(TAG, "Cached plan step failed: ${step.tool}, ending without fallback")
+                    onStatusUpdate("Cached plan failed. Ending without fallback.")
+                    return "Failed: cached plan step failed"
                 }
 
                 is ToolOutcome.AuthErr -> {
@@ -1997,7 +2212,7 @@ class AgentOrchestrator(
             "save_fact" -> "Remembering detail…" to args["key"]
             "retrieve_fact" -> "Recalling memory…" to args["key"]
             "read_pdf_page_range" -> "Reading document…" to args["file_path"]?.substringAfterLast('/')
-            "finish_task" -> "Completing step…" to args["summary"]
+            "tasks" -> "Completing step…" to args["plan"]
             else -> {
                 if (toolName.startsWith("board_") || toolName == "teach_with_board") "Teaching concept…" to null
                 else if (toolName.startsWith("annotation_") || toolName == "annotate_scene") "Drawing annotation…" to null

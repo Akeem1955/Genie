@@ -18,7 +18,9 @@ class ToolRegistry {
 
     init {
         // Register all built-in tools
+        register(ReplyTool())
         register(ClickTool())
+        register(ClickElementByIdTool())
         register(TapAtTool())
         register(TypeTextTool())
         register(SwipeTool())
@@ -55,6 +57,8 @@ class ToolRegistry {
         register(SaveFactTool())
         register(RetrieveFactTool())
         register(ReadPdfPageRangeTool())
+        register(ListDevicePdfsTool())
+        register(DetectOpenPdfTool())
         register(VisualizeConceptTool())
         register(TeachWithBoardTool())
         register(BoardAddObjectTool())

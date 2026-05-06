@@ -41,6 +41,8 @@ data class BoardObject(
     val stepId: String? = null,
     val animation: String? = null,
     val visible: Boolean = true,
+    /** SVG-like path data for 'path' type: M, L, Q, C, A, Z commands */
+    val pathData: String? = null,
 )
 
 @Serializable
@@ -124,6 +126,7 @@ fun defaultBoardSizeFor(type: String): BoardSize {
         "code" -> BoardSize(width = 420f, height = 72f)
         "circle" -> BoardSize(width = 140f, height = 140f)
         "line", "arrow" -> BoardSize(width = 220f, height = 0f)
+        "path" -> BoardSize(width = 0f, height = 0f)
         "box" -> BoardSize(width = 220f, height = 140f)
         "card" -> BoardSize(width = 260f, height = 160f)
         else -> BoardSize()

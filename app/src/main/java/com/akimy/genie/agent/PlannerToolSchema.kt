@@ -19,6 +19,10 @@ class PlannerToolSchema : ToolSet {
     fun click(@ToolParam(description = "The exact text or content description of the target element.") target: String) =
         declared()
 
+    @Tool(description = "Click a UI element based on its numeric ID shown on the annotated screenshot.")
+    fun click_element_by_id(@ToolParam(description = "The integer ID of the bounding box to click (e.g., 12).") id: String) =
+        declared()
+
     @Tool(description = "Tap a screen coordinate using normalized Android coordinates. Use after take_screenshot when a control is visible but not accessible by text.")
     fun tap_at(
         @ToolParam(description = "Normalized x coordinate from 0 to 1000. 0 is the left edge, 1000 is the right edge.") x: String,
@@ -287,8 +291,12 @@ class PlannerToolSchema : ToolSet {
         @ToolParam(description = "The annotation session identifier.") session_id: String,
     ) = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
         declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
@@ -349,8 +357,21 @@ class MessagingPlannerToolSchema : ToolSet {
     @Tool(description = "Swipe in a direction.")
     fun swipe(@ToolParam(description = "The swipe direction: up, down, left, or right.") direction: String) = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Save a user preference or fact to long-term memory.")
+    fun save_fact(
+        @ToolParam(description = "The fact key to save.") key: String,
+        @ToolParam(description = "The fact value to save.") value: String,
+    ) = declared()
+
+    @Tool(description = "Retrieve a previously saved user preference or fact.")
+    fun retrieve_fact(@ToolParam(description = "The fact key to retrieve.") key: String) = declared()
+
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
         declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
@@ -425,8 +446,40 @@ class ScreenControlPlannerToolSchema : ToolSet {
     @Tool(description = "Capture a screenshot of the current screen.")
     fun take_screenshot() = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Save a user preference or fact to long-term memory.")
+    fun save_fact(
+        @ToolParam(description = "The fact key to save.") key: String,
+        @ToolParam(description = "The fact value to save.") value: String,
+    ) = declared()
+
+    @Tool(description = "Retrieve a previously saved user preference or fact.")
+    fun retrieve_fact(@ToolParam(description = "The fact key to retrieve.") key: String) = declared()
+
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
+        declared()
+
+    private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
+}
+
+class SeeAndTapPlannerToolSchema : ToolSet {
+    @Tool(description = "Capture a screenshot of the current screen so the next turn can ground the tap in the image.")
+    fun take_screenshot() = declared()
+
+    @Tool(description = "Click a UI element based on its numeric ID shown on the annotated screenshot.")
+    fun click_element_by_id(@ToolParam(description = "The integer ID of the bounding box to click (e.g., 12).") id: String) =
+        declared()
+
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
         declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
@@ -477,8 +530,12 @@ class ReaderPlannerToolSchema : ToolSet {
     @Tool(description = "Press the system back button.")
     fun go_back() = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
         declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
@@ -531,8 +588,12 @@ class TeachingPlannerToolSchema : ToolSet {
         @ToolParam(description = "The fact value to save.") value: String,
     ) = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
         declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
@@ -586,8 +647,12 @@ class AnnotationPlannerToolSchema : ToolSet {
     @Tool(description = "Read all visible text on the current screen.")
     fun read_screen() = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
+        declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
         declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
@@ -614,9 +679,29 @@ class DocumentPlannerToolSchema : ToolSet {
     @Tool(description = "Retrieve a previously saved user preference or fact.")
     fun retrieve_fact(@ToolParam(description = "The fact key to retrieve.") key: String) = declared()
 
-    @Tool(description = "Mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
-    fun finish_task(@ToolParam(description = "A brief completion summary, or JSON when the prompt explicitly asks for a JSON plan.") summary: String) =
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) =
         declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) =
+        declared()
+
+    private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
+}
+
+class ChatPlannerToolSchema : ToolSet{
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to answer questions, explain what you found, or give feedback.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) = declared()
+
+    @Tool(description = "Save a durable fact or preference about the user into long-term memory so you can recall it later.")
+    fun save_fact(
+        @ToolParam(description = "A stable key representing the fact category (e.g. 'dietary_preference', 'name').") key: String,
+        @ToolParam(description = "The exact value or text to remember.") value: String,
+    ) = declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) = declared()
 
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
 }
@@ -625,10 +710,12 @@ fun geniePlannerToolProviders(profile: ToolProfile = ToolProfile.DEFAULT): List<
     return when (profile) {
         ToolProfile.Messaging -> listOf(tool(MessagingPlannerToolSchema()))
         ToolProfile.ScreenControl -> listOf(tool(ScreenControlPlannerToolSchema()))
+        ToolProfile.SeeAndTap -> listOf(tool(SeeAndTapPlannerToolSchema()))
         ToolProfile.Reader -> listOf(tool(ReaderPlannerToolSchema()))
         ToolProfile.Teaching -> listOf(tool(TeachingPlannerToolSchema()))
         ToolProfile.Annotation -> listOf(tool(AnnotationPlannerToolSchema()))
         ToolProfile.Document -> listOf(tool(DocumentPlannerToolSchema()))
         ToolProfile.General -> listOf(tool(PlannerToolSchema()))
+        ToolProfile.Chat -> listOf(tool(ChatPlannerToolSchema()))
     }
 }

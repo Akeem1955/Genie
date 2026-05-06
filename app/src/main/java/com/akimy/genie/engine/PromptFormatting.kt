@@ -15,8 +15,8 @@ object PromptFormatting {
     /**
      * Build a user message with optional image context.
      *
-     * Image bytes (PNG) are prepended so the text prompt can reference
-     * the visual context in the same turn.
+     * Match Gallery's LiteRT-LM image prompt order: image bytes first,
+     * then text last so the text prompt is the final token context.
      */
     fun buildUserContents(
         text: String,

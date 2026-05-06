@@ -61,7 +61,7 @@ private sealed class OverlayItem {
     ) : OverlayItem()
 }
 
-internal class AnnotationOverlayController(private val context: Context) {
+class AnnotationOverlayController(private val context: Context) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var overlayView: AnnotationOverlayView? = null
     private val items = mutableListOf<OverlayItem>()

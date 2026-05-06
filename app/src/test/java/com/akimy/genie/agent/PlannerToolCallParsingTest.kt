@@ -24,9 +24,9 @@ class PlannerToolCallParsingTest {
     }
 
     @Test
-    fun `finish task maps to finish decision`() {
+    fun `tasks maps to finish decision`() {
         val result = planner.parseDecision(
-            Message.model(toolCalls = listOf(ToolCall("finish_task", mapOf("summary" to "Done"))))
+            Message.model(toolCalls = listOf(ToolCall("tasks", mapOf("plan" to "Done"))))
         )
 
         assertTrue(result is PlanResult.Success)

@@ -56,15 +56,7 @@ Observability. A lightweight async event bus that logs all significant agent eve
 - **EventLogger** — `Channel<GenieEvent>` event bus; consumed by a dedicated coroutine; emits via `trySend()` so it never blocks the agent loop
 - **ErrorTaxonomy** — the four error classes: `TransientErr` (retry), `LogicErr` (replan), `AuthErr` (stop), `FatalErr` (hard stop)
 
----
-
-## `tools/`
-The agent's hands. All 53 tool implementations, the tool interface contract, safety wrappers, and visual scene systems live here.
-
-- **GenieTool** — the tool interface (`name`, `description`, `execute(args, serviceContext)`)
-- **ToolServiceContext** — the OS bridge interface; `GenieAccessibilityService` implements it; tools never call the service directly
-- **ToolRegistry** — name→GenieTool map; all 53 tools are registered here at startup
-- **RiskAssessor** — deterministic HITL risk scorer; evaluates `click` and `type_text` calls against screen context using ≥2 signal threshold before requiring biometric auth
+Extract and summarize all the text visible in this image. Return the extracted text first, then a brief summary`type_text` calls against screen context using ≥2 signal threshold before requiring biometric auth
 - **HITLInterceptionWrapper** — launches `BiometricAuthActivity` and suspends on a `Channel<AuthResult>` (30s timeout)
 - **BiometricAuthActivity** — transparent activity that shows `BiometricPrompt`; sends result back through the channel
 - **ScreenContext** — snapshot data class used by RiskAssessor (visible text, package, focused field metadata)

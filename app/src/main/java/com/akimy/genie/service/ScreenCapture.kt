@@ -47,7 +47,7 @@ object ScreenCapture {
 
                             if (bitmap != null) {
                                 // Convert to software bitmap for processing
-                                val softBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                val softBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 if (continuation.isActive) continuation.resume(softBitmap)
                             } else {
                                 Log.e(TAG, "Failed to wrap hardware buffer")

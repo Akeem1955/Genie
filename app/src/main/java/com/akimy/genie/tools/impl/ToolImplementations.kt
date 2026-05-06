@@ -5,6 +5,29 @@ import com.akimy.genie.tools.GenieTool
 import com.akimy.genie.tools.ToolServiceContext
 
 // ============================================================================
+// Agent communication tools
+// ============================================================================
+
+/**
+ * The agent's dedicated way to speak a response to the user.
+ *
+ * In practice this tool call is intercepted by the Planner (converted to
+ * Decision.Finish) and never reaches execute(). The implementation here
+ * exists only for registry completeness and defensive fallback.
+ */
+class ReplyTool : GenieTool {
+    override val name = "reply"
+    override val description = "Speak a message to the user through text-to-speech"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val message = args["message"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'message' argument")
+        if (message.isBlank()) return ToolOutcome.LogicErr("'message' cannot be blank")
+        return ToolOutcome.Ok(message)
+    }
+}
+
+// ============================================================================
 // OS interaction tools
 // ============================================================================
 
@@ -18,6 +41,28 @@ class ClickTool : GenieTool {
             ToolOutcome.Ok("Clicked on '$target'")
         } else {
             ToolOutcome.TransientErr("Could not find clickable element: '$target'")
+        }
+    }
+}
+
+class ClickElementByIdTool : GenieTool {
+    override val name = "click_element_by_id"
+    override val description = "Click a UI element based on its numeric ID shown on the annotated screenshot"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val idString = args["id"] ?: return ToolOutcome.LogicErr("Missing 'id' argument")
+        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'id' must be an integer")
+
+        val rect = com.akimy.genie.service.ScreenSomStore.getRect(elementId)
+            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
+
+        val realX = rect.centerX().toFloat()
+        val realY = rect.centerY().toFloat()
+
+        return if (serviceContext.tap(realX, realY)) {
+            ToolOutcome.Ok("Tapped element_id $elementId at (${realX.toInt()}, ${realY.toInt()})")
+        } else {
+            ToolOutcome.TransientErr("Tap gesture failed for element_id $elementId")
         }
     }
 }
@@ -491,6 +536,26 @@ class ReadPdfPageRangeTool : GenieTool {
     }
 }
 
+class ListDevicePdfsTool : GenieTool {
+    override val name = "list_device_pdfs"
+    override val description = "List PDF files available on the device (Download, Documents folders)"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        // Actual listing is handled by the orchestrator where filesystem access is available.
+        return ToolOutcome.Ok("LIST_DEVICE_PDFS")
+    }
+}
+
+class DetectOpenPdfTool : GenieTool {
+    override val name = "detect_open_pdf"
+    override val description = "Detect if a PDF is currently open on screen and return its file path"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        // Actual detection uses accessibility tree via the orchestrator.
+        return ToolOutcome.Ok("DETECT_OPEN_PDF")
+    }
+}
+
 class VisualizeConceptTool : GenieTool {
     override val name = "visualize_concept"
     override val description = "Create or update a conceptual canvas scene using a structured diagram payload"
@@ -711,18 +776,17 @@ class AnnotateSceneTool : GenieTool {
 
 class AnnotationAddBoxTool : GenieTool {
     override val name = "annotation_add_box"
-    override val description = "Add a highlighted box annotation to the current annotation session"
+    override val description = "Add a highlighted box annotation around a UI element using its numeric ID shown on the annotated screenshot"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
         requireAnnotationSessionAndOp(args)?.let { return it }
-        if (args["x"]?.toFloatOrNull() == null || args["y"]?.toFloatOrNull() == null) {
-            return ToolOutcome.LogicErr("'x' and 'y' must be valid numbers")
-        }
-        val hasWidthHeight = args["width"]?.toFloatOrNull() != null && args["height"]?.toFloatOrNull() != null
-        val hasBounds = args["x2"]?.toFloatOrNull() != null && args["y2"]?.toFloatOrNull() != null
-        if (!hasWidthHeight && !hasBounds) {
-            return ToolOutcome.LogicErr("Provide either width/height or x2/y2")
-        }
+        
+        val idString = args["element_id"] ?: return ToolOutcome.LogicErr("Missing 'element_id' argument")
+        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'element_id' must be an integer")
+
+        com.akimy.genie.service.ScreenSomStore.getRect(elementId)
+            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
+
         if ((args["style"]?.length ?: 0) > 4_000) {
             return ToolOutcome.LogicErr("'style' payload is too large")
         }
@@ -732,16 +796,20 @@ class AnnotationAddBoxTool : GenieTool {
 
 class AnnotationAddLabelTool : GenieTool {
     override val name = "annotation_add_label"
-    override val description = "Add a text label annotation to the current annotation session"
+    override val description = "Add a text label annotation to a UI element using its numeric ID shown on the annotated screenshot"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
         requireAnnotationSessionAndOp(args)?.let { return it }
         val text = args["text"]?.trim()
             ?: return ToolOutcome.LogicErr("Missing 'text' argument")
         if (text.isBlank()) return ToolOutcome.LogicErr("'text' cannot be blank")
-        if (args["x"]?.toFloatOrNull() == null || args["y"]?.toFloatOrNull() == null) {
-            return ToolOutcome.LogicErr("'x' and 'y' must be valid numbers")
-        }
+        
+        val idString = args["element_id"] ?: return ToolOutcome.LogicErr("Missing 'element_id' argument")
+        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'element_id' must be an integer")
+
+        com.akimy.genie.service.ScreenSomStore.getRect(elementId)
+            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
+
         if ((args["style"]?.length ?: 0) > 4_000) {
             return ToolOutcome.LogicErr("'style' payload is too large")
         }
@@ -751,24 +819,17 @@ class AnnotationAddLabelTool : GenieTool {
 
 class AnnotationAddPointerTool : GenieTool {
     override val name = "annotation_add_pointer"
-    override val description = "Add a pointer annotation with optional label to the current annotation session"
+    override val description = "Add a pointer annotation pointing to a UI element using its numeric ID shown on the annotated screenshot"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
         requireAnnotationSessionAndOp(args)?.let { return it }
-        if (args["x"]?.toFloatOrNull() == null || args["y"]?.toFloatOrNull() == null) {
-            return ToolOutcome.LogicErr("'x' and 'y' must be valid numbers")
-        }
-        val targetX = args["target_x"]?.trim()
-        val targetY = args["target_y"]?.trim()
-        if ((targetX.isNullOrBlank() xor targetY.isNullOrBlank())) {
-            return ToolOutcome.LogicErr("'target_x' and 'target_y' must both be provided when setting pointer target")
-        }
-        if (!targetX.isNullOrBlank() && targetX.toFloatOrNull() == null) {
-            return ToolOutcome.LogicErr("'target_x' must be a valid number")
-        }
-        if (!targetY.isNullOrBlank() && targetY.toFloatOrNull() == null) {
-            return ToolOutcome.LogicErr("'target_y' must be a valid number")
-        }
+        
+        val idString = args["element_id"] ?: return ToolOutcome.LogicErr("Missing 'element_id' argument")
+        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'element_id' must be an integer")
+
+        com.akimy.genie.service.ScreenSomStore.getRect(elementId)
+            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
+
         if ((args["style"]?.length ?: 0) > 4_000) {
             return ToolOutcome.LogicErr("'style' payload is too large")
         }

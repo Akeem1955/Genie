@@ -131,12 +131,20 @@ class Planner(
     }
 
     internal fun parseDecision(toolCall: ToolCall): PlanResult {
-        if (toolCall.name == "finish_task") {
-            val summary = stringifyArgument(toolCall.arguments["summary"])
+        if (toolCall.name == "tasks") {
+            val summary = stringifyArgument(toolCall.arguments["plan"])
                 .trim()
                 .takeIf { it.isNotEmpty() }
-                ?: return PlanResult.ParseError("finish_task requires a non-empty 'summary'")
+                ?: return PlanResult.ParseError("tasks requires a non-empty 'plan'")
             return PlanResult.Success(Decision.Finish(summary))
+        }
+
+        if (toolCall.name == "reply") {
+            val message = stringifyArgument(toolCall.arguments["message"])
+                .trim()
+                .takeIf { it.isNotEmpty() }
+                ?: return PlanResult.ParseError("reply requires a non-empty 'message'")
+            return PlanResult.Success(Decision.Reply(message))
         }
 
         val args = toolCall.arguments.entries.associate { (key, value) ->
@@ -156,7 +164,7 @@ class Planner(
         val excerpt = rawText.take(120)
         Log.w(TAG, "Plain text returned in native tool-calling mode: $excerpt")
         return PlanResult.ParseError(
-            message = "Model returned plain text instead of a tool call. Use a tool call or finish_task.",
+            message = "Model returned plain text instead of a tool call. Use a tool call or tasks.",
             rawText = rawText,
         )
     }

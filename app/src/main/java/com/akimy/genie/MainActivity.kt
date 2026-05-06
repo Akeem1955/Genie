@@ -72,6 +72,7 @@ import com.akimy.genie.engine.ModelPrefs
 import com.akimy.genie.service.ScreenMapStore
 import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolProfilePrefs
+import com.akimy.genie.tools.DebugPrefs
 import com.akimy.genie.tools.VisualizerSceneStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -579,6 +580,63 @@ fun GenieSetupScreen(
                     .fillMaxWidth()
                     .padding(bottom = 16.dp),
             )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // ── Debug mode toggle ──
+            var debugEnabled by remember { mutableStateOf(DebugPrefs.isDebugMode(context)) }
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+                    .then(
+                        if (debugEnabled) Modifier.border(
+                            2.dp,
+                            Color(0xFFF59E0B),
+                            RoundedCornerShape(16.dp)
+                        ) else Modifier
+                    )
+                    .clickable {
+                        debugEnabled = !debugEnabled
+                        DebugPrefs.setDebugMode(context, debugEnabled)
+                    },
+                colors = CardDefaults.cardColors(
+                    containerColor = if (debugEnabled)
+                        Color(0xFFF59E0B).copy(alpha = 0.10f)
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "\uD83E\uDDEA Debug Mode",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp,
+                            color = if (debugEnabled) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "Skip LLM. Show manual tool test buttons.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        text = if (debugEnabled) "ON" else "OFF",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (debugEnabled) Color(0xFFF59E0B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 

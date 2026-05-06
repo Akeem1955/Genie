@@ -4,6 +4,7 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.FingerprintGestureController
 import android.content.Context
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -12,6 +13,8 @@ import android.graphics.PixelFormat
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -47,6 +50,7 @@ import com.akimy.genie.agent.*
 import com.akimy.genie.data.GenieDatabase
 import com.akimy.genie.engine.DownloadState
 import com.akimy.genie.engine.GenieEngine
+import com.akimy.genie.engine.AgentResponse
 import com.akimy.genie.engine.GenieModelConfig
 import com.akimy.genie.engine.ModelDownloadManager
 import com.akimy.genie.engine.ModelPrefs
@@ -54,9 +58,14 @@ import com.akimy.genie.engine.awaitTerminalDownloadState
 import com.akimy.genie.telemetry.EventLogger
 import com.akimy.genie.telemetry.GenieEvent
 import com.akimy.genie.tools.ToolRegistry
+import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolProfilePrefs
 import com.akimy.genie.tools.ToolServiceContext
 import com.akimy.genie.tools.BoardStyle
+import com.akimy.genie.tools.DebugPrefs
+import com.akimy.genie.ui.DebugAnnotationPanel
+import com.akimy.genie.ui.DebugDocumentPanel
+import com.akimy.genie.ui.DebugToolTestOverlay
 import com.akimy.genie.tools.ViewportInfo
 import com.akimy.genie.tools.VisualizerSceneStore
 import kotlinx.coroutines.*
@@ -70,7 +79,7 @@ import java.util.UUID
 import kotlin.math.max
 
 private const val TAG = "GenieA11yService"
-private const val MAX_VISION_IMAGE_EDGE_PX = 1280
+private const val MAX_VISION_IMAGE_EDGE_PX = 640
 
 /**
  * Core Accessibility Service for Genie — the autonomous OS-level agent.
@@ -201,6 +210,18 @@ class GenieAccessibilityService : AccessibilityService(),
     override fun onServiceConnected() {
         Log.d(TAG, "=== Genie Service Connected ===")
 
+        // Initialize stores (needed for both normal and debug mode)
+        EventLogger.init(serviceScope)
+        VisualizerSceneStore.initialize(applicationContext)
+        ScreenMapStore.initialize(applicationContext)
+
+        // ── Debug mode: skip LLM, voice, and show manual tool test panel ──
+        if (DebugPrefs.isDebugMode(this)) {
+            Log.d(TAG, "=== DEBUG MODE ACTIVE — Skipping LLM bootstrap ===")
+            setupDebugOverlay()
+            return
+        }
+
         // Check audio permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
@@ -214,10 +235,6 @@ class GenieAccessibilityService : AccessibilityService(),
             return
         }
 
-        // Initialize event logger
-        EventLogger.init(serviceScope)
-        VisualizerSceneStore.initialize(applicationContext)
-        ScreenMapStore.initialize(applicationContext)
         registerFingerprintGestures()
         setupComposeOverlay()
         mediaPlayer = MediaPlayer.create(this, R.raw.genie)
@@ -305,6 +322,7 @@ class GenieAccessibilityService : AccessibilityService(),
                 factDao = db.factDao(),
                 skillDao = db.skillDao(),
                 appContext = applicationContext,
+                toolProfile = toolProfile,
             )
 
             // Step 4: Initialize voice
@@ -374,6 +392,9 @@ class GenieAccessibilityService : AccessibilityService(),
                             isWelcomeMessageFinished = true
                         }
                         serviceScope.launch(Dispatchers.Main) {
+                            if (uiStateFlow.value is AgentUIState.Speaking) {
+                                setUiState(AgentUIState.Idle)
+                            }
                             if (enabled && !agentBusy) {
                                 startWakeWordListening()
                             }
@@ -386,6 +407,9 @@ class GenieAccessibilityService : AccessibilityService(),
                             isWelcomeMessageFinished = true
                         }
                         serviceScope.launch(Dispatchers.Main) {
+                            if (uiStateFlow.value is AgentUIState.Speaking) {
+                                setUiState(AgentUIState.Idle)
+                            }
                             if (enabled && !agentBusy) {
                                 startWakeWordListening()
                             }
@@ -527,10 +551,14 @@ class GenieAccessibilityService : AccessibilityService(),
             } finally {
                 withContext(Dispatchers.Main) {
                     agentBusy = false
-                    setUiState(AgentUIState.Idle)
                     
                     // Small delay to let any pending TTS begin buffering
                     kotlinx.coroutines.delay(300)
+                    
+                    // Do not overwrite Speaking state if TTS is about to read the reply
+                    if (uiStateFlow.value !is AgentUIState.Speaking) {
+                        setUiState(AgentUIState.Idle)
+                    }
                     
                     // Only restart if TTS hasn't started speaking the result. 
                     // If it is speaking, UtteranceProgressListener.onDone will restart it.
@@ -582,6 +610,168 @@ class GenieAccessibilityService : AccessibilityService(),
             windowManager?.addView(composeOverlay, lp)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to show compose overlay: ${e.message}")
+        }
+    }
+
+    /**
+     * Debug-only overlay: touchable panel with buttons for each teaching tool.
+     * No LLM, no voice — purely manual tool execution + logcat output.
+     */
+
+    /**
+     * Takes a screenshot, loads the model (if not ready), and uses
+     * multimodal inference to extract & summarize text from the image.
+     */
+    private suspend fun detectPdfOnScreen(): String {
+        // 1. Take screenshot of whatever is behind the overlay
+        val bitmap = ScreenCapture.captureScreen(this)
+            ?: return "✗ Screenshot failed — check permissions"
+
+        // 2. Encode to PNG bytes at full resolution.
+        // Don't pre-downscale — let the engine's internal preprocessor handle
+        // optimal resizing. It can produce up to 2520 patches from a high-res
+        // image vs only 720 from a 640px-downscaled one. More patches = more
+        // text detail for document extraction.
+        val pngBytes = withContext(Dispatchers.Default) {
+            try {
+                ByteArrayOutputStream().use { out ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    out.toByteArray()
+                }
+            } catch (_: Exception) { null }
+        }
+        if (!bitmap.isRecycled) bitmap.recycle()
+
+        if (pngBytes == null) return "✗ PNG encoding failed"
+        Log.d(TAG, "detectPdf screenshot ready: ${pngBytes.size} bytes")
+
+        // 4. Ensure model is loaded (lazy init for debug mode)
+        if (!genieEngine.isReady()) {
+            val modelConfig = ModelPrefs.getSelectedConfig(this)
+            if (modelConfig == null || !modelConfig.isDownloaded(this)) {
+                return "✗ No model downloaded. Select & download a model in the Genie app first."
+            }
+            val modelPath = modelConfig.getLocalPath(this)
+            Log.d(TAG, "detectPdf: loading model for debug vision...")
+            val err = genieEngine.initialize(
+                context = this,
+                modelPath = modelPath,
+                systemPrompt = "You are a document reader. When given an image, extract all visible text and provide a brief summary.",
+                tools = emptyList(),
+            )
+            if (err != null) return "✗ Model init failed: $err"
+            Log.d(TAG, "detectPdf: model loaded ✓")
+        }
+
+        // 4b. Reset to clean vision-only conversation.
+        // When the engine was already initialized from bootstrap, the conversation
+        // carries the full agent system prompt, tool schemas, and constrained decoding.
+        // That context poisons the vision query, causing truncated output.
+        val visionPrompt = "Extract and summarize all the text visible in this image. Return the extracted text first, then a brief summary."
+        genieEngine.resetConversation(
+            systemPrompt = visionPrompt,
+            tools = emptyList(),
+            constrainedDecoding = false,
+        )
+        Log.d(TAG, "detectPdf: conversation reset to vision-only mode ✓")
+
+        // 5. Send screenshot to model with extraction prompt
+        val sb = StringBuilder()
+        var gotResponse = false
+        genieEngine.sendAgentMessage(
+            text = visionPrompt,
+            imagePngBytes = listOf(pngBytes),
+        ).collect { response ->
+            when (response) {
+                is AgentResponse.Token -> { sb.append(response.text); gotResponse = true }
+                is AgentResponse.Done -> { /* complete */ }
+                is AgentResponse.Error -> { sb.append("\n✗ Model error: ${response.error}") }
+                is AgentResponse.ToolCallRequest -> { /* ignore in this context */ }
+            }
+        }
+
+        return if (gotResponse) {
+            "✓ Model extracted text:\n\n${sb.toString().trim()}"
+        } else {
+            "✗ Model returned no output. ${sb.toString().trim()}"
+        }
+    }
+
+
+    private fun setupDebugOverlay() {
+        removeComposeOverlay()
+
+        if (windowManager == null) {
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        }
+
+        fakeLifecycleOwner = FakeLifecycleOwner()
+
+        val selectedProfile = ToolProfilePrefs.getSelectedProfile(this)
+        Log.d(TAG, "Debug mode — selected profile: ${selectedProfile.displayName}")
+
+        // Init annotation controller for Annotation profile
+        val annotationCtrl = if (selectedProfile == ToolProfile.Annotation) {
+            annotationOverlayController ?: AnnotationOverlayController(this).also {
+                annotationOverlayController = it
+            }
+        } else null
+
+        val closeAction = {
+            annotationOverlayController?.detach()
+            annotationOverlayController = null
+            removeComposeOverlay()
+            disableSelf()
+        }
+
+        composeOverlay = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(fakeLifecycleOwner)
+            setViewTreeSavedStateRegistryOwner(fakeLifecycleOwner)
+            setViewTreeViewModelStoreOwner(fakeLifecycleOwner)
+            setContent {
+                when (selectedProfile) {
+                    ToolProfile.Annotation -> {
+                        DebugAnnotationPanel(
+                            controller = annotationCtrl!!,
+                            onClose = closeAction,
+                        )
+                    }
+                    ToolProfile.Document -> {
+                        DebugDocumentPanel(
+                            onClose = closeAction,
+                            onDetectPdf = { detectPdfOnScreen() },
+                        )
+                    }
+                    else -> {
+                        // Teaching and all other profiles default to board debug
+                        DebugToolTestOverlay(onClose = closeAction)
+                    }
+                }
+            }
+        }
+
+        val isCompact = selectedProfile == ToolProfile.Document
+        val lp = WindowManager.LayoutParams().apply {
+            type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            format = PixelFormat.TRANSLUCENT
+            width = WindowManager.LayoutParams.MATCH_PARENT
+            gravity = Gravity.BOTTOM
+            if (isCompact) {
+                // Compact bottom strip — let user interact with apps behind it
+                height = WindowManager.LayoutParams.WRAP_CONTENT
+                flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            } else {
+                height = WindowManager.LayoutParams.MATCH_PARENT
+                flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
+        }
+
+        try {
+            windowManager?.addView(composeOverlay, lp)
+            Log.d(TAG, "Debug overlay attached (profile: ${selectedProfile.displayName})")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show debug overlay: ${e.message}")
         }
     }
 
@@ -657,13 +847,69 @@ class GenieAccessibilityService : AccessibilityService(),
             return "Screenshot failed"
         }
 
+        // Apply Set-of-Mark (SoM) bounding box annotations
+        ScreenSomStore.clear()
+        val root = rootInActiveWindow
+        if (root != null) {
+            val nodes = UINodeParser.parseNodeTree(root)
+            val canvas = android.graphics.Canvas(bitmap)
+            val paintBox = android.graphics.Paint().apply {
+                color = android.graphics.Color.RED
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 6f
+            }
+            val paintTextBg = android.graphics.Paint().apply {
+                color = android.graphics.Color.YELLOW
+                style = android.graphics.Paint.Style.FILL
+            }
+            val paintText = android.graphics.Paint().apply {
+                color = android.graphics.Color.BLACK
+                textSize = 42f
+                isAntiAlias = true
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+
+            var currentId = 1
+            for (node in nodes) {
+                val bounds = node.boundsInScreen
+                if (bounds != null && !bounds.isEmpty && node.isVisibleToUser) {
+                    // Only markup actionable or relevant items that an agent could click
+                    if (node.isClickable || node.isEditable || node.isScrollable || node.isLongClickable) {
+                        ScreenSomStore.store(currentId, bounds)
+
+                        val idString = " $currentId "
+                        val textWidth = paintText.measureText(idString)
+                        val textHeight = paintText.descent() - paintText.ascent()
+
+                        val cx = bounds.centerX().toFloat()
+                        val cy = bounds.centerY().toFloat()
+
+                        canvas.drawRect(bounds, paintBox)
+
+                        val bgRect = android.graphics.RectF(
+                            cx - textWidth / 2f,
+                            cy - textHeight / 2f + paintText.ascent(),
+                            cx + textWidth / 2f,
+                            cy - textHeight / 2f + paintText.descent()
+                        )
+                        canvas.drawRect(bgRect, paintTextBg)
+                        canvas.drawText(idString, cx - textWidth / 2f, cy - textHeight / 2f, paintText)
+
+                        currentId++
+                    }
+                }
+            }
+        }
+
+        val savedPath = saveAnnotatedScreenshotToDownloads(bitmap)
         val pngBytes = withContext(Dispatchers.Default) {
             encodeVisionPng(bitmap)
         }
 
         latestScreenshotPngBytes = pngBytes
         return if (pngBytes != null) {
-            "Screenshot captured (${bitmap.width}x${bitmap.height})"
+            val baseMessage = "Screenshot captured (${bitmap.width}x${bitmap.height}) with ${ScreenSomStore.getAll().size} annotated elements"
+            if (savedPath != null) "$baseMessage. Saved annotated screenshot to $savedPath" else baseMessage
         } else {
             "Screenshot captured but PNG encoding failed"
         }
@@ -681,7 +927,9 @@ class GenieAccessibilityService : AccessibilityService(),
             ByteArrayOutputStream().use { out ->
                 val ok = prepared.compress(Bitmap.CompressFormat.PNG, 100, out)
                 if (!ok) return null
-                out.toByteArray()
+                val bytes = out.toByteArray()
+                Log.d(TAG, "Vision screenshot encoded (${prepared.width}x${prepared.height}, ${bytes.size} bytes)")
+                bytes
             }
         } catch (_: Throwable) {
             null
@@ -689,6 +937,43 @@ class GenieAccessibilityService : AccessibilityService(),
             if (prepared !== bitmap && !prepared.isRecycled) {
                 prepared.recycle()
             }
+        }
+    }
+
+    private fun saveAnnotatedScreenshotToDownloads(bitmap: Bitmap): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Log.w(TAG, "Saving annotated screenshot to Downloads requires Android 10+")
+            return null
+        }
+
+        val filename = "annotated_som_${System.currentTimeMillis()}.png"
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Genie")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+
+        val wrote = try {
+            contentResolver.openOutputStream(uri)?.use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            } ?: false
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save annotated screenshot: ${e.message}")
+            false
+        }
+
+        return if (wrote) {
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+            "Downloads/Genie/$filename"
+        } else {
+            contentResolver.delete(uri, null, null)
+            null
         }
     }
 

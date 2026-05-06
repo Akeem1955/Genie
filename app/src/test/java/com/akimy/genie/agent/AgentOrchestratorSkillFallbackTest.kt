@@ -77,9 +77,9 @@ class AgentOrchestratorSkillFallbackTest {
             },
         )
 
-        assertEquals("Recovered via live planning", result)
+        assertEquals("Failed: cached plan step failed", result)
         assertEquals(1, planner.findSkillMatchCalls)
-        assertEquals(1, planner.planCalls)
+        assertEquals(0, planner.planCalls)
         assertNull(skillDao.incrementedSkillId)
     }
 

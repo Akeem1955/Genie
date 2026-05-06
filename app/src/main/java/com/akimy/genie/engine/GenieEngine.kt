@@ -67,6 +67,11 @@ sealed class AgentResponse {
  */
 class GenieEngine {
 
+    init {
+        @OptIn(ExperimentalApi::class)
+        ExperimentalFlags.enableConversationConstrainedDecoding = true
+    }
+
     private var engine: Engine? = null
     private var conversation: Conversation? = null
     private var isInitialized = false
@@ -101,6 +106,7 @@ class GenieEngine {
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = Backend.GPU(),
+                visionBackend = Backend.GPU(),
                 maxNumTokens = AGENT_MAX_TOKENS,
                 cacheDir = context.cacheDir.path,
             )
@@ -110,16 +116,14 @@ class GenieEngine {
             newEngine.initialize()
 
             // Create conversation with manual tool calling (critical for HITL)
-            val conversationConfig = ConversationConfig(
-                samplerConfig = agentSamplerConfig(),
-                systemInstruction = PromptFormatting.buildSystemInstruction(systemPrompt),
-                tools = tools,
-                automaticToolCalling = false, // The "Golden Ticket" — HITL Safety Wrapper
-            )
-
-            val newConversation = createConversationWithConstrainedDecoding(
+            val newConversation = createConversation(
                 engine = newEngine,
-                conversationConfig = conversationConfig,
+                conversationConfig = ConversationConfig(
+                    samplerConfig = agentSamplerConfig(),
+                    systemInstruction = PromptFormatting.buildSystemInstruction(systemPrompt),
+                    tools = tools,
+                    automaticToolCalling = false, // The "Golden Ticket" — HITL Safety Wrapper
+                ),
             )
 
             engine = newEngine
@@ -251,17 +255,24 @@ class GenieEngine {
     /**
      * Reset the conversation context while keeping the engine alive.
      * Adapted from Gallery's LlmChatModelHelper.resetConversation().
+     *
+     * @param constrainedDecoding When true (default), enables constrained decoding
+     *   for tool-call output. Set to false for freeform text tasks like vision queries.
      */
+    @OptIn(ExperimentalApi::class)
     fun resetConversation(
         systemPrompt: String,
         tools: List<ToolProvider> = emptyList(),
+        constrainedDecoding: Boolean = true,
     ) {
         try {
-            Log.d(TAG, "Resetting conversation")
+            Log.d(TAG, "Resetting conversation (constrainedDecoding=$constrainedDecoding)")
             conversation?.close()
 
+            // Follow Gallery's pattern: set flag before createConversation, reset after.
+            ExperimentalFlags.enableConversationConstrainedDecoding = constrainedDecoding
             val eng = engine ?: return
-            val newConversation = createConversationWithConstrainedDecoding(
+            val newConversation = createConversation(
                 engine = eng,
                 conversationConfig = ConversationConfig(
                     samplerConfig = agentSamplerConfig(),
@@ -270,6 +281,7 @@ class GenieEngine {
                     automaticToolCalling = false,
                 ),
             )
+            ExperimentalFlags.enableConversationConstrainedDecoding = false
             conversation = newConversation
             Log.d(TAG, "Conversation reset complete")
         } catch (e: Exception) {
@@ -323,16 +335,10 @@ class GenieEngine {
         )
     }
 
-    @OptIn(ExperimentalApi::class)
-    private fun createConversationWithConstrainedDecoding(
+    private fun createConversation(
         engine: Engine,
         conversationConfig: ConversationConfig,
     ): Conversation {
-        return try {
-            ExperimentalFlags.enableConversationConstrainedDecoding = true
-            engine.createConversation(conversationConfig)
-        } finally {
-            ExperimentalFlags.enableConversationConstrainedDecoding = false
-        }
+        return engine.createConversation(conversationConfig)
     }
 }
