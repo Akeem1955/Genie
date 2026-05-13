@@ -291,7 +291,7 @@ flowchart TD
         I -->|RequireBiometric| K[HITLInterceptionWrapper\nBiometricAuthActivity]
         K --> J
 
-        J --> L[handleSpecialTools\nFacts, PDF, visualizer, board, annotation]
+        J --> L[handleSpecialTools\nFacts, PDF, visualizer, board]
         L --> M{ToolOutcome}
         M -->|Ok| E
         M -->|TransientErr| N[retry with exponential backoff]
@@ -316,7 +316,7 @@ This means the LLM always sees the goal and the most recent context, even during
 
 The system prompt in `PromptBuilder.AGENT_SYSTEM_PROMPT` forces the model to emit **exactly one native LiteRT-LM tool call per turn**. Plain text during planning is treated as invalid. Goal completion is represented as a `tasks(plan=...)` tool call, which the planner maps into `Decision.Finish`.
 
-The prompt also injects explicit behavior rules for accessibility-aware exploration tools, continuous-reader tools, screen-map memory tools, visualizer/teaching-board tools, and annotation tools.
+The prompt also injects explicit behavior rules for accessibility-aware exploration tools, continuous-reader tools, screen-map memory tools, visualizer/teaching-board tools,.
 
 ### The Key Files
 
@@ -336,7 +336,7 @@ The prompt also injects explicit behavior rules for accessibility-aware explorat
 
 ### The Story
 
-When the Planner decides to act, the agent needs hands. These hands are the **53 tools** registered in the `ToolRegistry`, each backed by Android's Accessibility APIs and grouped into action, awareness, memory, visualizer, and annotation families.
+When the Planner decides to act, the agent needs hands. These hands are the **53 tools** registered in the `ToolRegistry`, each backed by Android's Accessibility APIs and grouped into action, awareness, memory, visualizer, and visualizer families.
 
 Let's trace what happens when the planner emits a `click(target="Wi-Fi")` tool call:
 
@@ -377,7 +377,6 @@ sequenceDiagram
 | Persistent Memory | `save_fact`, `retrieve_fact` | Long-term preference storage in Room |
 | Document I/O | `read_pdf_page_range` | Reads local PDF text page ranges for grounded tasks |
 | Visualizer and Teaching Board | `visualize_concept`, `teach_with_board`, `board_add_object`, `board_update_object`, `board_remove_object`, `board_focus_object`, `board_reveal_step`, `board_next_step`, `board_prev_step`, `board_replay_step`, `board_set_narration` | Builds and teaches concepts with visual scenes and staged board lessons |
-| Annotation | `annotate_scene`, `annotation_add_box`, `annotation_add_label`, `annotation_add_pointer`, `annotation_clear`, `annotation_replay` | Live on-screen overlays with timed replay and persisted annotation sessions |
 
 ### The ToolServiceContext Pattern
 
@@ -414,7 +413,6 @@ Every gesture method is a **suspend function** that wraps `AccessibilityService.
 | [`ScreenMapStore.kt`](app/src/main/java/com/akimy/genie/service/ScreenMapStore.kt) | Persistent screen landmarks and user hints |
 | [`VisualizerLayoutEngine.kt`](app/src/main/java/com/akimy/genie/tools/VisualizerLayoutEngine.kt) | Deterministic layout generation for visualizer scenes |
 | [`VisualizerExportManager.kt`](app/src/main/java/com/akimy/genie/tools/VisualizerExportManager.kt) | PNG export/share pipeline for generated teaching visuals |
-| [`AnnotationOverlayController.kt`](app/src/main/java/com/akimy/genie/service/AnnotationOverlayController.kt) | Live annotation overlay drawing and replay |
 
 ---
 
@@ -667,7 +665,6 @@ mindmap
                     GestureDispatcher.kt
                     ScreenCapture.kt
                     AccessibilityAwarenessTracker.kt
-                    AnnotationOverlayController.kt
                 tools/
                     GenieTool.kt
                     ToolRegistry.kt
@@ -675,7 +672,6 @@ mindmap
                     HITLInterceptionWrapper.kt
                     RiskAssessor.kt
                     BiometricAuthActivity.kt
-                    AnnotationSessionStore.kt
                     VisualizerSceneStore.kt
                     VisualizerLayoutEngine.kt
                     VisualizerExportManager.kt

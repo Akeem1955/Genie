@@ -12,7 +12,10 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 private const val MAX_NODES = 24
 private const val MAX_EDGES = 40
@@ -171,8 +174,15 @@ object VisualizerSceneStore {
         stepsJson: String?,
         narrationText: String?,
     ): SceneStoreResult {
-        val objects = parseBoardObjects(objectsJson) ?: return SceneStoreResult(false, "Invalid 'objects' JSON")
         val steps = parseBoardSteps(stepsJson) ?: return SceneStoreResult(false, "Invalid 'steps' JSON")
+        val existing = scenes[sceneId]
+        val sceneTitle = (title ?: existing?.title ?: sceneId).trim().take(MAX_LABEL_LEN)
+        val parsedObjects = parseBoardObjects(objectsJson) ?: return SceneStoreResult(false, "Invalid 'objects' JSON")
+        val objects = if (parsedObjects.isEmpty() && steps.isNotEmpty()) {
+            defaultBoardObjectsForSteps(sceneTitle, steps)
+        } else {
+            parsedObjects
+        }
         val validation = validateBoard(objects, steps)
         if (validation != null) return SceneStoreResult(false, validation)
 
@@ -187,8 +197,6 @@ object VisualizerSceneStore {
             narrationText = requestedNarration.ifBlank { steps.firstOrNull()?.narration.orEmpty() },
         )
         val board = normalizeBoard(rawBoard)
-        val existing = scenes[sceneId]
-        val sceneTitle = (title ?: existing?.title ?: sceneId).trim().take(MAX_LABEL_LEN)
         val updated = if (existing == null) {
             VisualizerScene(
                 sceneId = sceneId,
@@ -486,7 +494,7 @@ object VisualizerSceneStore {
         return if (scene.board != null || scene.diagramType == "board") scene else null
     }
 
-    private fun saveScene(scene: VisualizerScene) {
+    fun saveScene(scene: VisualizerScene) {
         scenes[scene.sceneId] = scene
         layouts[scene.sceneId] = VisualizerLayoutEngine.layout(scene)
         persistScene(scene)
@@ -536,17 +544,341 @@ object VisualizerSceneStore {
 
     private fun parseBoardObjects(raw: String?): List<BoardObject>? {
         if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { json.decodeFromString<List<BoardObject>>(raw) }.getOrNull()
+        runCatching { json.decodeFromString<List<BoardObject>>(raw) }.getOrNull()?.let { return it }
+
+        val arr = runCatching { json.parseToJsonElement(raw) as? JsonArray }.getOrNull() ?: return null
+        val objects = mutableListOf<BoardObject>()
+        arr.forEach { element ->
+            val parsed = parseLooseBoardObject(element) ?: return null
+            objects += parsed
+        }
+        return objects
     }
 
     private fun parseBoardSteps(raw: String?): List<BoardStep>? {
         if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { json.decodeFromString<List<BoardStep>>(raw) }.getOrNull()
+        runCatching { json.decodeFromString<List<BoardStep>>(raw) }.getOrNull()?.let { return it }
+
+        runCatching { json.parseToJsonElement(raw) }.getOrNull()?.let { element ->
+            val steps = when (element) {
+                is JsonArray -> parseLooseStepArray(element)
+                is JsonObject -> parseLooseStepObject(element)
+                else -> null
+            }
+            if (!steps.isNullOrEmpty()) return steps
+        }
+
+        return parseLooseStepsFromText(raw)
+    }
+
+    private fun parseLooseStepArray(arr: JsonArray): List<BoardStep>? {
+        val steps = mutableListOf<BoardStep>()
+        arr.forEachIndexed { index, element ->
+            val parsed = parseLooseStepElement(element, index) ?: return null
+            steps += parsed
+        }
+        return steps
+    }
+
+    private fun parseLooseStepObject(obj: JsonObject): List<BoardStep>? {
+        if (obj.stringAny("stepId", "step_id", "id", "title", "narration", "text") != null) {
+            return listOf(parseLooseStepFromFields(obj, 0) ?: return null)
+        }
+
+        val steps = obj.entries.mapIndexedNotNull { index, entry ->
+            parseLooseStepValue(entry.key, entry.value, index)
+        }
+        return steps.takeIf { it.isNotEmpty() }
+    }
+
+    private fun parseLooseStepElement(element: JsonElement, index: Int): BoardStep? {
+        val obj = element as? JsonObject ?: return null
+        parseLooseStepFromFields(obj, index)?.let { return it }
+
+        val stepEntry = obj.entries.firstOrNull { entry ->
+            entry.key.startsWith("step", ignoreCase = true)
+        } ?: return null
+        return parseLooseStepValue(stepEntry.key, stepEntry.value, index)
+    }
+
+    private fun parseLooseStepFromFields(obj: JsonObject, index: Int): BoardStep? {
+        val hasStepFields = obj.stringAny(
+            "stepId",
+            "step_id",
+            "id",
+            "title",
+            "narration",
+            "narration_text",
+            "text",
+            "description",
+            "rationale",
+            "narrationale",
+            "ration_ale",
+            "ration",
+        ) != null
+        if (!hasStepFields) return null
+
+        val stepId = normalizeLooseStepId(
+            obj.stringAny("stepId", "step_id", "id") ?: "${index + 1}"
+        ) ?: "step_${index + 1}"
+        val title = obj.stringAny(
+            "title",
+            "label",
+            "name",
+            "rationale",
+            "narrationale",
+            "ration_ale",
+            "ration",
+        ).orEmpty()
+        val narration = obj.stringAny(
+            "narration",
+            "narration_text",
+            "text",
+            "description",
+            "body",
+            "content",
+        ).orEmpty().ifBlank { title }
+
+        return BoardStep(
+            stepId = stepId,
+            title = title.take(MAX_LABEL_LEN),
+            narration = narration.take(600),
+        )
+    }
+
+    private fun parseLooseStepValue(key: String, value: JsonElement, index: Int): BoardStep? {
+        val stepId = normalizeLooseStepId(key) ?: "step_${index + 1}"
+        return when (value) {
+            is JsonObject -> {
+                val parsed = parseLooseStepFromFields(value, index)
+                parsed?.copy(stepId = stepId) ?: BoardStep(
+                    stepId = stepId,
+                    title = key.normalizeLooseId().take(MAX_LABEL_LEN),
+                    narration = value.stringAny("text", "narration", "description").orEmpty().take(600),
+                )
+            }
+            is JsonPrimitive -> {
+                val text = value.contentOrNull.orEmpty()
+                BoardStep(
+                    stepId = stepId,
+                    title = key.normalizeLooseId().take(MAX_LABEL_LEN),
+                    narration = text.take(600),
+                )
+            }
+            else -> null
+        }
+    }
+
+    private fun parseLooseStepsFromText(raw: String): List<BoardStep>? {
+        val keyRegex = Regex("\"(step[_ -]?\\d+[^\"}]*)\"\\s*:", RegexOption.IGNORE_CASE)
+        val matches = keyRegex.findAll(raw).toList()
+        if (matches.isEmpty()) return null
+
+        val steps = mutableListOf<BoardStep>()
+        matches.forEachIndexed { index, match ->
+            val key = match.groupValues[1]
+            val valueStart = raw.indexOfFirstNonWhitespace(match.range.last + 1)
+            if (valueStart < 0) return@forEachIndexed
+
+            val parsed = when (raw[valueStart]) {
+                '{' -> {
+                    val end = raw.findMatchingBrace(valueStart)
+                    if (end < 0) null else {
+                        val body = raw.substring(valueStart, end + 1)
+                        val obj = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+                        obj?.let { parseLooseStepValue(key, it, index) }
+                    }
+                }
+                '"' -> {
+                    val end = raw.findStringEnd(valueStart)
+                    val text = if (end > valueStart) raw.substring(valueStart + 1, end) else ""
+                    BoardStep(
+                        stepId = normalizeLooseStepId(key) ?: "step_${index + 1}",
+                        title = key.normalizeLooseId().take(MAX_LABEL_LEN),
+                        narration = text.take(600),
+                    )
+                }
+                else -> null
+            }
+            if (parsed != null && steps.none { it.stepId == parsed.stepId }) {
+                steps += parsed
+            }
+        }
+
+        return steps.takeIf { it.isNotEmpty() }
+    }
+
+    private fun parseLooseBoardObject(element: JsonElement): BoardObject? {
+        val obj = element as? JsonObject ?: return null
+        val objectId = obj.stringAny("objectId", "object_id", "id")
+            ?.normalizeLooseId()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val objectType = obj.stringAny("objectType", "object_type", "type")
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val defaultSize = defaultBoardSizeFor(objectType)
+        val positionObject = obj["position"] as? JsonObject
+        val sizeObject = obj["size"] as? JsonObject
+
+        return BoardObject(
+            objectId = objectId,
+            objectType = objectType,
+            text = obj.stringAny("text", "label", "content").orEmpty().take(MAX_BOARD_TEXT_LEN),
+            position = BoardPoint(
+                x = positionObject?.floatAny("x") ?: obj.floatAny("x") ?: 0f,
+                y = positionObject?.floatAny("y") ?: obj.floatAny("y") ?: 0f,
+            ),
+            size = BoardSize(
+                width = sizeObject?.floatAny("width", "w") ?: obj.floatAny("width", "w") ?: defaultSize.width,
+                height = sizeObject?.floatAny("height", "h") ?: obj.floatAny("height", "h") ?: defaultSize.height,
+            ),
+            style = parseLooseBoardStyle(obj["style"]) ?: BoardStyle(),
+            stepId = normalizeLooseStepId(obj.stringAny("stepId", "step_id")),
+            animation = obj.stringAny("animation", "anim")?.take(40),
+            visible = obj.booleanAny("visible") ?: true,
+            pathData = obj.stringAny("pathData", "path_data", "path")?.take(2_000),
+        )
+    }
+
+    private fun parseLooseBoardStyle(element: JsonElement?): BoardStyle? {
+        if (element == null) return null
+        return when (element) {
+            is JsonObject -> runCatching { json.decodeFromJsonElement(BoardStyle.serializer(), element) }.getOrNull()
+            is JsonPrimitive -> element.contentOrNull?.let { parseBoardStyle(it) }
+            else -> null
+        }
+    }
+
+    private fun JsonObject.stringAny(vararg keys: String): String? {
+        keys.forEach { key ->
+            val value = this[key] as? JsonPrimitive
+            val content = value?.contentOrNull ?: value?.toString()?.trim('"')
+            if (!content.isNullOrBlank()) return content.trim()
+        }
+        return null
+    }
+
+    private fun JsonObject.floatAny(vararg keys: String): Float? {
+        keys.forEach { key ->
+            val raw = stringAny(key)
+            val value = raw?.toFloatOrNull()
+            if (value != null) return value
+        }
+        return null
+    }
+
+    private fun JsonObject.booleanAny(vararg keys: String): Boolean? {
+        keys.forEach { key ->
+            val raw = stringAny(key)
+            val value = raw?.lowercase()?.let {
+                when (it) {
+                    "true" -> true
+                    "false" -> false
+                    else -> null
+                }
+            }
+            if (value != null) return value
+        }
+        return null
+    }
+
+    private fun normalizeLooseStepId(raw: String?): String? {
+        val cleaned = raw?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        Regex("(?i)^step[_ -]?(\\d+)").find(cleaned)?.groupValues?.getOrNull(1)?.let { number ->
+            return "step_$number"
+        }
+        val withoutPrefix = cleaned.removePrefix("step_").removePrefix("step-")
+        if (withoutPrefix.all { it.isDigit() }) return "step_$withoutPrefix"
+        return cleaned.normalizeLooseId()
+    }
+
+    private fun String.normalizeLooseId(): String {
+        return trim()
+            .replace(Regex("\\s+"), "_")
+            .replace(Regex("[^A-Za-z0-9_-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_', '-')
+            .take(64)
     }
 
     private fun parseBoardStyle(raw: String?): BoardStyle? {
         if (raw.isNullOrBlank()) return BoardStyle()
         return runCatching { json.decodeFromString<BoardStyle>(raw) }.getOrNull()
+    }
+
+    private fun defaultBoardObjectsForSteps(title: String, steps: List<BoardStep>): List<BoardObject> {
+        val objects = mutableListOf<BoardObject>()
+        objects += BoardObject(
+            objectId = "lesson_title",
+            objectType = "title",
+            text = title.ifBlank { "Lesson" }.take(MAX_BOARD_TEXT_LEN),
+            position = BoardPoint(48f, 28f),
+            size = BoardSize(620f, 64f),
+            style = BoardStyle(textAlign = "left", textSize = 30f),
+        )
+        steps.take(4).forEachIndexed { index, step ->
+            objects += BoardObject(
+                objectId = "lesson_card_${index + 1}",
+                objectType = "card",
+                text = buildString {
+                    append(step.title.ifBlank { "Step ${index + 1}" })
+                    val narration = step.narration.take(140)
+                    if (narration.isNotBlank()) {
+                        append("\n")
+                        append(narration)
+                    }
+                }.take(MAX_BOARD_TEXT_LEN),
+                position = BoardPoint(72f, 124f + (index * 148f)),
+                size = BoardSize(620f, 118f),
+                style = BoardStyle(textAlign = "left", textSize = 22f, cornerRadius = 16f),
+                stepId = step.stepId,
+                animation = "reveal",
+            )
+        }
+        return objects
+    }
+
+    private fun String.indexOfFirstNonWhitespace(startIndex: Int): Int {
+        for (index in startIndex.coerceAtLeast(0)..lastIndex) {
+            if (!this[index].isWhitespace()) return index
+        }
+        return -1
+    }
+
+    private fun String.findMatchingBrace(startIndex: Int): Int {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in startIndex..lastIndex) {
+            val ch = this[index]
+            when {
+                escaped -> escaped = false
+                ch == '\\' && inString -> escaped = true
+                ch == '"' -> inString = !inString
+                !inString && ch == '{' -> depth++
+                !inString && ch == '}' -> {
+                    depth--
+                    if (depth == 0) return index
+                }
+            }
+        }
+        return -1
+    }
+
+    private fun String.findStringEnd(startIndex: Int): Int {
+        var escaped = false
+        for (index in (startIndex + 1)..lastIndex) {
+            val ch = this[index]
+            when {
+                escaped -> escaped = false
+                ch == '\\' -> escaped = true
+                ch == '"' -> return index
+            }
+        }
+        return -1
     }
 
     private fun validateGraph(nodes: List<VisualNode>, edges: List<VisualEdge>): String? {
@@ -577,9 +909,8 @@ object VisualizerSceneStore {
             return "Board step ids must be unique"
         }
 
-        val allowedTypes = setOf("title", "text", "box", "card", "circle", "line", "arrow", "code")
-        if (objects.any { it.objectType.lowercase() !in allowedTypes }) {
-            return "Board object type must be one of: ${allowedTypes.joinToString()}"
+        if (objects.any { it.objectType.lowercase() !in BOARD_OBJECT_TYPES }) {
+            return "Board object type must be one of: ${BOARD_OBJECT_TYPES.joinToString()}"
         }
         if (objects.any { it.text.length > MAX_BOARD_TEXT_LEN }) {
             return "Board object text is too long. Keep each object text under $MAX_BOARD_TEXT_LEN characters"

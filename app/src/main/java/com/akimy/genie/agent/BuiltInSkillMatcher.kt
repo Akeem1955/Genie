@@ -54,7 +54,7 @@ object BuiltInSkillMatcher {
         val title = goal.trim().replace("\n", " ").take(72).ifBlank { "Concept Diagram" }
 
         val createArgs = mapOf(
-            "operation" to "create_scene",
+            "operation" to "create",
             "scene_id" to sceneId,
             "diagram_type" to diagramType,
             "title" to title,
@@ -63,7 +63,7 @@ object BuiltInSkillMatcher {
         )
 
         val exportArgs = mapOf(
-            "operation" to "export_scene",
+            "operation" to "export",
             "scene_id" to sceneId,
         )
 
@@ -180,13 +180,6 @@ object BuiltInSkillMatcher {
                     "objects" to objects.toString(),
                     "steps" to steps.toString(),
                     "narration_text" to "Let us walk through this concept step by step on the board.",
-                )
-            ),
-            Decision.Act(
-                tool = "board_focus_object",
-                args = mapOf(
-                    "scene_id" to sceneId,
-                    "object_id" to "title",
                 )
             ),
         )

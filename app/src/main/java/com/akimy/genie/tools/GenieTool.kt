@@ -73,52 +73,6 @@ interface ToolServiceContext {
     /** Get the current viewport dimensions in physical pixels */
     suspend fun getViewportInfo(): ViewportInfo
 
-    /** Start or reset a live annotation overlay session */
-    suspend fun annotationStartSession(sessionId: String, title: String): Boolean
-
-    /** Draw an annotation box in the live overlay */
-    suspend fun annotationDrawBox(
-        sessionId: String,
-        opId: String,
-        delayMs: Long,
-        x: Float,
-        y: Float,
-        width: Float,
-        height: Float,
-        label: String,
-        style: BoardStyle,
-    ): Boolean
-
-    /** Draw an annotation label in the live overlay */
-    suspend fun annotationDrawLabel(
-        sessionId: String,
-        opId: String,
-        delayMs: Long,
-        x: Float,
-        y: Float,
-        text: String,
-        style: BoardStyle,
-    ): Boolean
-
-    /** Draw an annotation pointer in the live overlay */
-    suspend fun annotationDrawPointer(
-        sessionId: String,
-        opId: String,
-        delayMs: Long,
-        x: Float,
-        y: Float,
-        targetX: Float,
-        targetY: Float,
-        text: String,
-        style: BoardStyle,
-    ): Boolean
-
-    /** Clear a live annotation overlay session */
-    suspend fun annotationClearSession(sessionId: String): Boolean
-
-    /** Replay a live annotation overlay session */
-    suspend fun annotationReplaySession(sessionId: String): Boolean
-
     /** Read the currently accessibility-focused element */
     suspend fun readFocusedNode(): String
 
@@ -190,6 +144,21 @@ interface ToolServiceContext {
 
     /** Read the visible form fields, hints, errors, and focused state */
     suspend fun readFormState(): String
+
+    /** Start audio recording for Scribe profile */
+    suspend fun startAudioRecording(): Boolean
+
+    /** Stop audio recording and return the file path */
+    suspend fun stopAudioRecording(): String?
+
+    /** Transcribe audio file to text using specified language */
+    suspend fun transcribeAudio(audioFilePath: String, language: String): String
+
+    /** Extract insights from transcription (summary, key points, action items) */
+    suspend fun extractInsights(transcription: String, outputLanguage: String): GeneralInsights
+
+    /** Format transcription into SOAP note structure */
+    suspend fun formatSoapNote(transcription: String, outputLanguage: String): SoapNote
 
 }
 

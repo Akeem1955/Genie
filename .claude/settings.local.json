@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"C:\\\\Users\\\\akimy\\\\Documents\\\\Gemma4Project\\\\gallery\" -name \"*.json\" -type f 2>/dev/null | grep -v \"node_modules\\\\|build\\\\|.gradle\")",
+      "Read(//c/Users/akimy/Documents/Gemma4Project/gallery/**)"
+    ]
+  }
+}

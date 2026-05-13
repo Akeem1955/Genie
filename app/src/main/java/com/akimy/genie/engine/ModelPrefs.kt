@@ -28,16 +28,28 @@ object ModelPrefs {
     /** Resolve the [GenieModelConfig] for the user's choice, or null if not set. */
     fun getSelectedConfig(context: Context): GenieModelConfig? {
         val id = getSelectedModelId(context) ?: return null
-        
+
         if (id.startsWith("custom:")) {
             val filename = id.substringAfter("custom:")
+
+            // Detect audio/image support from filename
+            val supportsAudio = filename in listOf(
+                "gemma-4-E2B-it.litertlm",
+                "gemma-4-E4B-it.litertlm",
+                "gemma-3n-E2B-it-int4.litertlm",
+                "gemma-3n-E4B-it-int4.litertlm"
+            )
+            val supportsImage = supportsAudio // Same models support both
+
             return GenieModelConfig(
                 modelId = id,
                 modelFile = filename,
                 commitHash = "local",
-                sizeInBytes = 0L, // Size doesn't matter for local imports since we already have it
+                sizeInBytes = 0L,
                 displayName = "Custom: $filename",
-                customUrl = "", // No download URL
+                downloadUrl = "",
+                supportsAudio = supportsAudio,
+                supportsImage = supportsImage,
             )
         }
 

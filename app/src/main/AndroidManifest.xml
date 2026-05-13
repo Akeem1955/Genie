@@ -62,6 +62,16 @@
             android:exported="false"
             android:theme="@style/Theme.Genie" />
 
+        <activity
+            android:name=".QuizActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Genie" />
+
+        <activity
+            android:name=".ImagePickerActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- Transparent HITL Biometric Activity -->
         <activity
             android:name=".tools.BiometricAuthActivity"

@@ -1,6 +1,7 @@
 package com.akimy.genie.tools.impl
 
 import com.akimy.genie.agent.ToolOutcome
+import com.akimy.genie.tools.BOARD_OBJECT_TYPES
 import com.akimy.genie.tools.GenieTool
 import com.akimy.genie.tools.ToolServiceContext
 
@@ -33,10 +34,17 @@ class ReplyTool : GenieTool {
 
 class ClickTool : GenieTool {
     override val name = "click"
-    override val description = "Click on a UI element by its visible text or content description"
+    override val description = "Click on a UI element by text, or activate currently focused node when target is omitted"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        val target = args["target"] ?: return ToolOutcome.LogicErr("Missing 'target' argument")
+        val target = args["target"]?.trim().orEmpty()
+        if (target.isEmpty()) {
+            return if (serviceContext.activateFocused()) {
+                ToolOutcome.Ok("Activated focused element")
+            } else {
+                ToolOutcome.TransientErr("Could not activate the focused element")
+            }
+        }
         return if (serviceContext.clickElement(target)) {
             ToolOutcome.Ok("Clicked on '$target'")
         } else {
@@ -226,15 +234,6 @@ class GoHomeTool : GenieTool {
     }
 }
 
-class ReadFocusedTool : GenieTool {
-    override val name = "read_focused"
-    override val description = "Read the currently accessibility-focused element with role and state"
-
-    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        return ToolOutcome.Ok(serviceContext.readFocusedNode())
-    }
-}
-
 class FocusNextTool : GenieTool {
     override val name = "focus_next"
     override val description = "Move accessibility focus to the next navigable element"
@@ -248,9 +247,35 @@ class FocusNextTool : GenieTool {
     }
 }
 
+class RightTool : GenieTool {
+    override val name = "right"
+    override val description = "Move accessibility focus to the next node in TalkBack order"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        return if (serviceContext.focusNext()) {
+            ToolOutcome.Ok(serviceContext.readFocusedNode())
+        } else {
+            ToolOutcome.TransientErr("Could not move focus to the next element")
+        }
+    }
+}
+
 class FocusPreviousTool : GenieTool {
     override val name = "focus_previous"
     override val description = "Move accessibility focus to the previous navigable element"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        return if (serviceContext.focusPrevious()) {
+            ToolOutcome.Ok(serviceContext.readFocusedNode())
+        } else {
+            ToolOutcome.TransientErr("Could not move focus to the previous element")
+        }
+    }
+}
+
+class LeftTool : GenieTool {
+    override val name = "left"
+    override val description = "Move accessibility focus to the previous node in TalkBack order"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
         return if (serviceContext.focusPrevious()) {
@@ -548,7 +573,7 @@ class ListDevicePdfsTool : GenieTool {
 
 class DetectOpenPdfTool : GenieTool {
     override val name = "detect_open_pdf"
-    override val description = "Detect if a PDF is currently open on screen and return its file path"
+    override val description = "Screenshot the current visible PDF page and extract its text using vision"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
         // Actual detection uses accessibility tree via the orchestrator.
@@ -563,15 +588,15 @@ class VisualizeConceptTool : GenieTool {
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
         val rawOperation = args["operation"]?.trim()?.lowercase()
             ?: return ToolOutcome.LogicErr("Missing 'operation' argument")
-        val operation = when (rawOperation) {
-            "create", "create_scene" -> "create_scene"
-            "update", "update_scene" -> "update_scene"
-            "highlight", "focus" -> "highlight"
-            "clear", "clear_scene", "delete", "delete_scene" -> "clear_scene"
-            "export", "export_scene" -> "export_scene"
+        val operation = when {
+            rawOperation.startsWith("create") -> "create_scene"
+            rawOperation.startsWith("update") -> "update_scene"
+            rawOperation.startsWith("highlight") || rawOperation == "focus" -> "highlight"
+            rawOperation.startsWith("clear") || rawOperation.startsWith("delete") -> "clear_scene"
+            rawOperation.startsWith("export") -> "export_scene"
             else -> null
         } ?: return ToolOutcome.LogicErr(
-            "Invalid 'operation' '$rawOperation'. Must map to create_scene, update_scene, highlight, clear_scene, export_scene"
+            "Invalid 'operation' '$rawOperation'. Use: create, update, highlight, clear, or export"
         )
 
         val validOps = setOf("create_scene", "update_scene", "highlight", "clear_scene", "export_scene")
@@ -606,6 +631,47 @@ class VisualizeConceptTool : GenieTool {
     }
 }
 
+class VisualizeFocusNodeTool : GenieTool {
+    override val name = "visualize_focus_node"
+    override val description = "Focus one node in an existing visualizer concept scene"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val sceneId = args["scene_id"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'scene_id' argument")
+        val nodeId = args["node_id"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'node_id' argument")
+        val idPattern = Regex("^[A-Za-z0-9_-]{1,64}$")
+        if (!idPattern.matches(sceneId) || !idPattern.matches(nodeId)) {
+            return ToolOutcome.LogicErr("Invalid 'scene_id' or 'node_id'. Use letters, numbers, underscore, hyphen")
+        }
+        return ToolOutcome.Ok("VISUALIZE_FOCUS_NODE")
+    }
+}
+
+class BoardTeachStepTool : GenieTool {
+    override val name = "board_teach_step"
+    override val description = "Teach one lesson step on the existing board. The app auto-layouts the visual card; you only supply the step label and narration text."
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val sceneId = args["scene_id"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'scene_id' argument")
+        if (!Regex("^[A-Za-z0-9_-]{1,64}$").matches(sceneId)) {
+            return ToolOutcome.LogicErr("Invalid 'scene_id'. Use 1-64 chars: letters, numbers, underscore, hyphen")
+        }
+        val stepLabel = args["step_label"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'step_label' argument")
+        if (stepLabel.isBlank()) {
+            return ToolOutcome.LogicErr("'step_label' must not be blank")
+        }
+        val narration = args["narration"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'narration' argument")
+        if (narration.isBlank()) {
+            return ToolOutcome.LogicErr("'narration' must not be blank")
+        }
+        return ToolOutcome.Ok("BOARD_TEACH_STEP")
+    }
+}
+
 class TeachWithBoardTool : GenieTool {
     override val name = "teach_with_board"
     override val description = "Create or replace an interactive teaching board scene with staged lesson steps and narration"
@@ -623,6 +689,20 @@ class TeachWithBoardTool : GenieTool {
     }
 }
 
+class BoardClearTool : GenieTool {
+    override val name = "board_clear"
+    override val description = "Clear a teaching board scene so a lesson can restart cleanly"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val sceneId = args["scene_id"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'scene_id' argument")
+        if (!Regex("^[A-Za-z0-9_-]{1,64}$").matches(sceneId)) {
+            return ToolOutcome.LogicErr("Invalid 'scene_id'. Use letters, numbers, underscore, hyphen")
+        }
+        return ToolOutcome.Ok("BOARD_CLEAR")
+    }
+}
+
 class BoardAddObjectTool : GenieTool {
     override val name = "board_add_object"
     override val description = "Add a drawable object to an existing teaching board scene"
@@ -631,59 +711,13 @@ class BoardAddObjectTool : GenieTool {
         requireBoardSceneAndObject(args)?.let { return it }
         val objectType = args["object_type"]?.trim()?.lowercase()
             ?: return ToolOutcome.LogicErr("Missing 'object_type' argument")
-        if (objectType !in setOf("title", "text", "box", "card", "circle", "line", "arrow", "code")) {
+        if (objectType !in BOARD_OBJECT_TYPES) {
             return ToolOutcome.LogicErr("Invalid 'object_type' '$objectType'")
         }
         if (args["x"]?.toFloatOrNull() == null || args["y"]?.toFloatOrNull() == null) {
             return ToolOutcome.LogicErr("'x' and 'y' must be valid numbers")
         }
         return ToolOutcome.Ok("BOARD_ADD_OBJECT")
-    }
-}
-
-class BoardUpdateObjectTool : GenieTool {
-    override val name = "board_update_object"
-    override val description = "Update position, size, style, text, or step of an existing teaching board object"
-
-    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        requireBoardSceneAndObject(args)?.let { return it }
-        return ToolOutcome.Ok("BOARD_UPDATE_OBJECT")
-    }
-}
-
-class BoardRemoveObjectTool : GenieTool {
-    override val name = "board_remove_object"
-    override val description = "Remove an object from the teaching board scene"
-
-    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        requireBoardSceneAndObject(args)?.let { return it }
-        return ToolOutcome.Ok("BOARD_REMOVE_OBJECT")
-    }
-}
-
-class BoardFocusObjectTool : GenieTool {
-    override val name = "board_focus_object"
-    override val description = "Visually focus a board object so the lesson can emphasize it"
-
-    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        requireBoardSceneAndObject(args)?.let { return it }
-        return ToolOutcome.Ok("BOARD_FOCUS_OBJECT")
-    }
-}
-
-class BoardRevealStepTool : GenieTool {
-    override val name = "board_reveal_step"
-    override val description = "Jump the teaching board to a named lesson step and reveal its objects"
-
-    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        val sceneId = args["scene_id"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'scene_id' argument")
-        val stepId = args["step_id"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'step_id' argument")
-        if (!Regex("^[A-Za-z0-9_-]{1,64}$").matches(sceneId) || !Regex("^[A-Za-z0-9_-]{1,64}$").matches(stepId)) {
-            return ToolOutcome.LogicErr("Invalid 'scene_id' or 'step_id'")
-        }
-        return ToolOutcome.Ok("BOARD_REVEAL_STEP")
     }
 }
 
@@ -760,123 +794,122 @@ private fun requireBoardSceneAndObject(args: Map<String, String>): ToolOutcome? 
     return null
 }
 
-class AnnotateSceneTool : GenieTool {
-    override val name = "annotate_scene"
-    override val description = "Start a standalone screen annotation session"
+// ============================================================================
+// Scribe tools (audio recording and transcription)
+// ============================================================================
+
+class RecordAudioTool : GenieTool {
+    override val name = "record_audio"
+    override val description = "Start audio recording with the configured input language"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        val sessionId = args["session_id"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'session_id' argument")
-        if (!Regex("^[A-Za-z0-9_-]{1,64}$").matches(sessionId)) {
-            return ToolOutcome.LogicErr("Invalid 'session_id'. Use letters, numbers, underscore, hyphen")
+        return try {
+            val config = com.akimy.genie.tools.ScribeSessionStore.getConfig()
+                ?: return ToolOutcome.LogicErr("Scribe configuration not set. Cannot start recording.")
+
+            val started = serviceContext.startAudioRecording()
+            if (started) {
+                ToolOutcome.Ok("Audio recording started with language: ${config.inputLanguage}")
+            } else {
+                ToolOutcome.TransientErr("Failed to start audio recording. Check permissions.")
+            }
+        } catch (e: Exception) {
+            ToolOutcome.TransientErr("Error starting recording: ${e.message}")
         }
-        return ToolOutcome.Ok("ANNOTATE_SCENE")
     }
 }
 
-class AnnotationAddBoxTool : GenieTool {
-    override val name = "annotation_add_box"
-    override val description = "Add a highlighted box annotation around a UI element using its numeric ID shown on the annotated screenshot"
+class StopRecordingTool : GenieTool {
+    override val name = "stop_recording"
+    override val description = "Stop the current audio recording and save it"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        requireAnnotationSessionAndOp(args)?.let { return it }
-        
-        val idString = args["element_id"] ?: return ToolOutcome.LogicErr("Missing 'element_id' argument")
-        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'element_id' must be an integer")
-
-        com.akimy.genie.service.ScreenSomStore.getRect(elementId)
-            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
-
-        if ((args["style"]?.length ?: 0) > 4_000) {
-            return ToolOutcome.LogicErr("'style' payload is too large")
+        return try {
+            val audioPath = serviceContext.stopAudioRecording()
+            if (audioPath != null) {
+                com.akimy.genie.tools.ScribeSessionStore.setAudioFilePath(audioPath)
+                ToolOutcome.Ok("Recording stopped. Audio saved to: $audioPath")
+            } else {
+                ToolOutcome.TransientErr("Failed to stop recording or save audio file.")
+            }
+        } catch (e: Exception) {
+            ToolOutcome.TransientErr("Error stopping recording: ${e.message}")
         }
-        return ToolOutcome.Ok("ANNOTATION_ADD_BOX")
     }
 }
 
-class AnnotationAddLabelTool : GenieTool {
-    override val name = "annotation_add_label"
-    override val description = "Add a text label annotation to a UI element using its numeric ID shown on the annotated screenshot"
+class TranscribeAudioTool : GenieTool {
+    override val name = "transcribe_audio"
+    override val description = "Transcribe the recorded audio file into text"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        requireAnnotationSessionAndOp(args)?.let { return it }
-        val text = args["text"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'text' argument")
-        if (text.isBlank()) return ToolOutcome.LogicErr("'text' cannot be blank")
-        
-        val idString = args["element_id"] ?: return ToolOutcome.LogicErr("Missing 'element_id' argument")
-        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'element_id' must be an integer")
+        val audioFilePath = args["audioFilePath"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'audioFilePath' argument")
 
-        com.akimy.genie.service.ScreenSomStore.getRect(elementId)
-            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
+        return try {
+            val config = com.akimy.genie.tools.ScribeSessionStore.getConfig()
+                ?: return ToolOutcome.LogicErr("Scribe configuration not set.")
 
-        if ((args["style"]?.length ?: 0) > 4_000) {
-            return ToolOutcome.LogicErr("'style' payload is too large")
+            val transcription = serviceContext.transcribeAudio(audioFilePath, config.inputLanguage)
+            if (transcription.isNotBlank()) {
+                ToolOutcome.Ok("Transcription: $transcription")
+            } else {
+                ToolOutcome.TransientErr("Transcription returned empty result.")
+            }
+        } catch (e: Exception) {
+            ToolOutcome.TransientErr("Error transcribing audio: ${e.message}")
         }
-        return ToolOutcome.Ok("ANNOTATION_ADD_LABEL")
     }
 }
 
-class AnnotationAddPointerTool : GenieTool {
-    override val name = "annotation_add_pointer"
-    override val description = "Add a pointer annotation pointing to a UI element using its numeric ID shown on the annotated screenshot"
+class ExtractInsightsTool : GenieTool {
+    override val name = "extract_insights"
+    override val description = "Extract general insights from transcribed text"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        requireAnnotationSessionAndOp(args)?.let { return it }
-        
-        val idString = args["element_id"] ?: return ToolOutcome.LogicErr("Missing 'element_id' argument")
-        val elementId = idString.toIntOrNull() ?: return ToolOutcome.LogicErr("'element_id' must be an integer")
+        val transcription = args["transcription"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'transcription' argument")
+        val outputLanguage = args["outputLanguage"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'outputLanguage' argument")
 
-        com.akimy.genie.service.ScreenSomStore.getRect(elementId)
-            ?: return ToolOutcome.LogicErr("Invalid element_id: $elementId. Box ID not found on screen.")
-
-        if ((args["style"]?.length ?: 0) > 4_000) {
-            return ToolOutcome.LogicErr("'style' payload is too large")
+        if (transcription.isBlank()) {
+            return ToolOutcome.LogicErr("Transcription text is empty.")
         }
-        return ToolOutcome.Ok("ANNOTATION_ADD_POINTER")
+
+        return try {
+            val insights = serviceContext.extractInsights(transcription, outputLanguage)
+            com.akimy.genie.tools.ScribeSessionStore.setResult(
+                com.akimy.genie.tools.ScribeResult.General(insights)
+            )
+            ToolOutcome.Ok("Insights extracted successfully. Summary: ${insights.summary}")
+        } catch (e: Exception) {
+            ToolOutcome.TransientErr("Error extracting insights: ${e.message}")
+        }
     }
 }
 
-class AnnotationClearTool : GenieTool {
-    override val name = "annotation_clear"
-    override val description = "Clear all overlays for the given annotation session"
+class FormatSoapNoteTool : GenieTool {
+    override val name = "format_soap_note"
+    override val description = "Format transcribed medical conversation into a SOAP note"
 
     override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        val sessionId = args["session_id"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'session_id' argument")
-        if (!Regex("^[A-Za-z0-9_-]{1,64}$").matches(sessionId)) {
-            return ToolOutcome.LogicErr("Invalid 'session_id'. Use letters, numbers, underscore, hyphen")
+        val transcription = args["transcription"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'transcription' argument")
+        val outputLanguage = args["outputLanguage"]?.trim()
+            ?: return ToolOutcome.LogicErr("Missing 'outputLanguage' argument")
+
+        if (transcription.isBlank()) {
+            return ToolOutcome.LogicErr("Transcription text is empty.")
         }
-        return ToolOutcome.Ok("ANNOTATION_CLEAR")
-    }
-}
 
-class AnnotationReplayTool : GenieTool {
-    override val name = "annotation_replay"
-    override val description = "Replay the current annotation session"
-
-    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
-        val sessionId = args["session_id"]?.trim()
-            ?: return ToolOutcome.LogicErr("Missing 'session_id' argument")
-        if (!Regex("^[A-Za-z0-9_-]{1,64}$").matches(sessionId)) {
-            return ToolOutcome.LogicErr("Invalid 'session_id'. Use letters, numbers, underscore, hyphen")
+        return try {
+            val soapNote = serviceContext.formatSoapNote(transcription, outputLanguage)
+            com.akimy.genie.tools.ScribeSessionStore.setResult(
+                com.akimy.genie.tools.ScribeResult.Medical(soapNote)
+            )
+            ToolOutcome.Ok("SOAP note formatted successfully.")
+        } catch (e: Exception) {
+            ToolOutcome.TransientErr("Error formatting SOAP note: ${e.message}")
         }
-        return ToolOutcome.Ok("ANNOTATION_REPLAY")
     }
-}
-
-private fun requireAnnotationSessionAndOp(args: Map<String, String>): ToolOutcome? {
-    val sessionId = args["session_id"]?.trim()
-        ?: return ToolOutcome.LogicErr("Missing 'session_id' argument")
-    val opId = args["op_id"]?.trim()
-        ?: return ToolOutcome.LogicErr("Missing 'op_id' argument")
-    val idPattern = Regex("^[A-Za-z0-9_-]{1,64}$")
-    if (!idPattern.matches(sessionId) || !idPattern.matches(opId)) {
-        return ToolOutcome.LogicErr("Invalid 'session_id' or 'op_id'. Use letters, numbers, underscore, hyphen")
-    }
-    val delayMs = args["delay_ms"]?.trim()?.takeIf { it.isNotEmpty() }?.toLongOrNull() ?: 0L
-    if (delayMs < 0L || delayMs > 20_000L) {
-        return ToolOutcome.LogicErr("'delay_ms' must be between 0 and 20000")
-    }
-    return null
 }

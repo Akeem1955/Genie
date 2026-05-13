@@ -30,7 +30,8 @@ class ToolRegistry {
         register(OpenAppTool())
         register(GoBackTool())
         register(GoHomeTool())
-        register(ReadFocusedTool())
+        register(RightTool())
+        register(LeftTool())
         register(FocusNextTool())
         register(FocusPreviousTool())
         register(FocusFirstTool())
@@ -60,22 +61,17 @@ class ToolRegistry {
         register(ListDevicePdfsTool())
         register(DetectOpenPdfTool())
         register(VisualizeConceptTool())
+        register(VisualizeFocusNodeTool())
+        register(BoardTeachStepTool())
         register(TeachWithBoardTool())
+        register(BoardClearTool())
         register(BoardAddObjectTool())
-        register(BoardUpdateObjectTool())
-        register(BoardRemoveObjectTool())
-        register(BoardFocusObjectTool())
-        register(BoardRevealStepTool())
         register(BoardNextStepTool())
         register(BoardPrevStepTool())
         register(BoardReplayStepTool())
         register(BoardSetNarrationTool())
-        register(AnnotateSceneTool())
-        register(AnnotationAddBoxTool())
-        register(AnnotationAddLabelTool())
-        register(AnnotationAddPointerTool())
-        register(AnnotationClearTool())
-        register(AnnotationReplayTool())
+        // Note: Scribe tools (RecordAudioTool, etc.) are not registered
+        // because Scribe is UI-driven, not agent-driven
     }
 
     /**

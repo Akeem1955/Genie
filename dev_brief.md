@@ -43,7 +43,6 @@ The Android OS bridge. Everything that touches the accessibility tree, gestures,
 - **GestureDispatcher** — swipe, tap, scroll, and long-press as suspend functions wrapping `dispatchGesture()`
 - **ScreenCapture** — wraps `AccessibilityService.takeScreenshot()` into a coroutine; returns a `Bitmap`
 - **AccessibilityAwarenessTracker** — tracks accessibility events to provide screen summaries, recent changes, dialog detection, and form state
-- **AnnotationOverlayController** — draws boxes, labels, and pointer arrows on a live `TYPE_ACCESSIBILITY_OVERLAY` window with delay-aware replay
 - **ContinuousNarrationController** — manages ongoing spoken ambient guidance (enable/disable/repeat)
 - **ScreenMapStore** — in-memory per-screen landmark and user hint store (resets on service restart)
 - **SemanticModels** — shared data classes for semantic screen information
@@ -60,7 +59,6 @@ Extract and summarize all the text visible in this image. Return the extracted t
 - **HITLInterceptionWrapper** — launches `BiometricAuthActivity` and suspends on a `Channel<AuthResult>` (30s timeout)
 - **BiometricAuthActivity** — transparent activity that shows `BiometricPrompt`; sends result back through the channel
 - **ScreenContext** — snapshot data class used by RiskAssessor (visible text, package, focused field metadata)
-- **AnnotationSessionStore** — persists annotation operations and projects them into visualizer-compatible board scenes
 - **VisualizerSceneStore** — state machine for teaching board and diagram scenes (create, update, highlight, step reveal, export)
 - **VisualizerLayoutEngine** — deterministic layout generation for visualizer diagrams
 - **VisualizerExportManager** — renders scenes to PNG and shares via FileProvider

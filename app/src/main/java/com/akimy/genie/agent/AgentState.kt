@@ -30,6 +30,7 @@ data class AgentState(
     val maxRetries: Int = 3,
     val maxReplans: Int = 3,
     var isNovelPlan: Boolean = true,
+    var pendingRepairReason: String? = null,
 )
 
 /**

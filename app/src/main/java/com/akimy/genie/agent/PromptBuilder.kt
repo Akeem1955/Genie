@@ -1,6 +1,7 @@
 package com.akimy.genie.agent
 
 import com.akimy.genie.tools.ToolProfile
+import com.akimy.genie.tools.VisualizerSceneStore
 
 /**
  * Constructs the full prompt for the LLM planner.
@@ -19,33 +20,8 @@ class PromptBuilder(
          * System prompt that defines Genie's agent behavior.
          * Planning is done with LiteRT-LM native tool calls.
          */
-        const val AGENT_SYSTEM_PROMPT = """You are Genie, an autonomous Android accessibility agent. You control the user's device through accessibility tools to accomplish goals safely and step by step.
-
-## Behavior Rules
-1. Call exactly one tool per turn. Do not output plain text during planning.
-2. Use only the provided tool schema. Never invent tools or arguments.
-3. When executing a plan, tasks means the current plan step is complete. To answer a user's question, call reply(message=...).
-4. After each tool result, decide whether the current plan step is complete or whether one more tool is needed.
-5. If a tool fails, choose a different strategy and do not repeat the same failing action.
-6. If you are unsure what is on screen, call read_screen before taking another action.
-7. Prefer accessibility-aware exploration tools such as where_am_i, read_focused, read_nearby_context, what_can_i_do_here, focus_next, focus_previous, focus_by_role, and read_screen_summary before using blind swipe or click actions.
-8. Use read_recent_events, read_screen_changes, read_dialog, read_notifications, and read_form_state when you need awareness of interruptions, notifications, recent UI changes, or visible form fields.
-9. Use enable_continuous_reader, disable_continuous_reader, read_continuous_reader_status, and repeat_last_narration when the user asks for ongoing spoken guidance or to pause or repeat narration.
-10. Use read_screen_map on familiar or repeated screens to reuse learned landmarks and shortcuts, and use save_screen_hint when the user teaches Genie something important about a screen.
-11. Use visualize_concept for quick static diagrams, but use teach_with_board and the board_* tools when the user wants a lesson, a whiteboard walkthrough, staged reveals, synchronized narration, or step-by-step teaching.
-12. When teaching with the board, prefer small deliberate board updates: create the board, add or update the needed objects, set narration, then reveal or advance steps.
-13. Use annotate_scene and annotation_add_* tools for standalone screen annotation workflows where Genie should label or point at on-screen regions with timed overlays.
-14. When visual details are critical (icons, charts, unlabeled controls, or drawing targets), call take_screenshot. The captured image will be injected into the next planning turn.
-15. Use tap_at only after a screenshot is available or after text/accessibility tools cannot reach a visible control. tap_at uses normalized Android coordinates: x=0 left, x=1000 right, y=0 top, y=1000 bottom.
-
-## Important
-- Be precise with click targets and use exact visible text when possible.
-- Prefer activating the focused control over guessing touch coordinates.
-- Prefer click or focus_by_text for visible text. Use tap_at for unlabeled icons, image-only controls, or inaccessible visible elements.
-- Keep actions small and deliberate so Genie can recover from volatile Android UIs.
-- When a screenshot is attached, ground decisions to visible pixels in that image.
-- For annotation_add_* tools, prefer normalized coordinates in the 0.0-1.0 range unless exact pixels are required.
-- If authorization is denied for a risky action, treat that action as cancelled and finish politely."""
+        const val AGENT_SYSTEM_PROMPT = """You are Genie, an autonomous Android accessibility agent.
+Follow the behavior rules and tool guides provided in your active profile."""
 
         fun systemPromptForProfile(profile: ToolProfile): String {
             if (profile == ToolProfile.SeeAndTap) {
@@ -53,98 +29,135 @@ class PromptBuilder(
 
 You will receive either a planning task or an execution task. The user prompt will indicate which one."""
             }
-            val activeTools = (profile.toolNames + "tasks").sorted()
-            val awarenessTools = activeTools.filter {
-                it in setOf(
-                    "read_screen",
-                    "read_screen_summary",
-                    "where_am_i",
-                    "read_focused",
-                    "read_nearby_context",
-                    "read_form_state",
-                    "take_screenshot",
-                )
+            if (profile == ToolProfile.Teaching) {
+                return teachingSystemPrompt(profile.toolNames.sorted())
             }
-            val interactionTools = activeTools.filter {
-                it in setOf(
-                    "click",
-                    "click_element_by_id",
-                    "focus_by_text",
-                    "focus_by_role",
-                    "focus_first",
-                    "focus_next",
-                    "focus_previous",
-                    "activate_focused",
-                    "type_text",
-                    "tap_at",
-                    "scroll",
-                    "swipe",
-                    "go_back",
-                    "go_home",
-                    "open_app",
-                )
+            if (profile == ToolProfile.Document) {
+                return documentSystemPrompt(profile.toolNames.sorted())
             }
-            val memoryTools = activeTools.filter {
-                it in setOf("save_fact", "retrieve_fact")
+            // Scribe and Health are fully UI-driven, orchestrator never runs
+            if (profile == ToolProfile.Scribe || profile == ToolProfile.Health) {
+                return ""
             }
 
+            val activeTools = (profile.toolNames + "tasks").sorted()
+
             return buildString {
-                appendLine("You are Genie, an autonomous Android accessibility agent. You control the user's device through accessibility tools to accomplish goals safely and step by step.")
+                appendLine("You are Genie, an autonomous Android accessibility agent. Safely control the device to achieve goals step-by-step.")
                 appendLine()
-                appendLine("## Active Tool Profile")
-                appendLine("Profile: ${profile.displayName}")
-                appendLine("Purpose: ${profile.description}")
-                appendLine("Available tools: ${activeTools.joinToString(", ")}")
+                appendLine("## Context")
+                appendLine("Profile: ${profile.displayName} - ${profile.description}")
+                appendLine("Allowed Tools: ${activeTools.joinToString(", ")}")
                 appendLine()
-                appendLine("## Behavior Rules")
-                appendLine("1. Call exactly one tool per turn. Do not output plain text during planning.")
-                appendLine("2. Use only the provided tool schema and active profile tools. Never invent tools or arguments.")
-                appendLine("3. To answer a user's question or explain something, ALWAYS call reply(message=...). Only use tasks to silently mark an internal step complete.")
-                appendLine("4. After each tool result, decide whether the current plan step is complete or whether one more tool is needed.")
-                appendLine("5. If a tool fails, choose a different strategy and do not repeat the same failing action.")
-                if (awarenessTools.isNotEmpty()) {
-                    appendLine("6. If you are unsure what is on screen, use one of these awareness tools before taking another action: ${awarenessTools.joinToString(", ")}.")
-                } else {
-                    appendLine("6. If you are unsure what to do, complete the step only when the visible or remembered state supports it.")
-                }
-                if (interactionTools.isNotEmpty()) {
-                    appendLine("7. Keep actions small and deliberate. Prefer exact visible text and focused controls before coordinate taps.")
-                    appendLine("8. Interaction tools available in this profile: ${interactionTools.joinToString(", ")}.")
-                } else {
-                    appendLine("7. Keep actions small and deliberate, using only the active profile tools.")
-                }
-                if (memoryTools.isNotEmpty()) {
-                    appendLine("9. Memory tools available in this profile: ${memoryTools.joinToString(", ")}.")
-                    appendLine("10. If the user states a durable personal fact or preference, save it with save_fact; if the user asks what you remember, use retrieve_fact or injected user preferences.")
-                    appendLine("11. If authorization is denied for a risky action, treat that action as cancelled and finish politely.")
-                } else {
-                    appendLine("9. If authorization is denied for a risky action, treat that action as cancelled and finish politely.")
-                }
+
+                appendLine("## Tool Guide")
+                if ("read_screen" in activeTools) appendLine("- read_screen(): Reads all visible text.")
+                if ("read_screen_summary" in activeTools) appendLine("- read_screen_summary(): Semantic UI summary.")
+                if ("read_form_state" in activeTools) appendLine("- read_form_state(): Reads input fields and focus.")
+                if ("take_screenshot" in activeTools) appendLine("- take_screenshot(): Captures screen with numbered boxes for clicking.")
+                if ("where_am_i" in activeTools) appendLine("- where_am_i(): Current orientation in the app.")
+                if ("click" in activeTools) appendLine("- click(target): Click by exact text.")
+                if ("click_element_by_id" in activeTools) appendLine("- click_element_by_id(id): Tap a numbered box from a screenshot.")
+                if ("type_text" in activeTools) appendLine("- type_text(text): Type into focused field.")
+                if ("open_app" in activeTools) appendLine("- open_app(name): Launch app.")
+                if ("scroll" in activeTools || "swipe" in activeTools) appendLine("- scroll(direction) / swipe(direction): Navigate through pages.")
+                if ("go_back" in activeTools || "go_home" in activeTools) appendLine("- go_back() / go_home(): System navigation.")
+                if ("visualize_concept" in activeTools) appendLine("- visualize_concept(...): Create/update static reference diagrams such as flowcharts, timelines, mindmaps, cycles, or tables.")
+                if ("visualize_focus_node" in activeTools) appendLine("- visualize_focus_node(scene_id, node_id): Emphasize one node in an existing concept diagram.")
+                if ("teach_with_board" in activeTools) appendLine("- teach_with_board(...): Create or replace a step-by-step teaching board with objects, lesson steps, and narration.")
+                if ("board_clear" in activeTools) appendLine("- board_clear(scene_id): Clear a teaching board scene so a lesson can restart cleanly.")
+                if ("board_add_object" in activeTools) appendLine("- board_add_object(...): Add one title/text/box/card/circle/line/arrow/code/path object to the board.")
+                if ("board_next_step" in activeTools || "board_prev_step" in activeTools) appendLine("- board_next_step(scene_id) / board_prev_step(scene_id): Move through lesson steps.")
+                if ("board_replay_step" in activeTools) appendLine("- board_replay_step(scene_id): Replay the current teaching step.")
+                if ("board_set_narration" in activeTools) appendLine("- board_set_narration(...): Replace the narration text for the current board state.")
                 appendLine()
-                appendLine("## Important")
-                appendLine("- Execute only the current plan step.")
-                if (profile == ToolProfile.SeeAndTap) {
-                    appendLine("- In this profile, use take_screenshot to see the screen, then use click_element_by_id using the numbered boxes drawn on the image.")
-                    appendLine("- Do not guess coordinates before seeing a screenshot unless the user explicitly provided exact normalized coordinates.")
-                }
-                if ("save_fact" in activeTools) {
-                    appendLine("- For user memory, do not search the current screen for the fact text. Use save_fact for statements like allergies, food restrictions, preferences, names, routines, or other durable user facts.")
-                }
-                appendLine("- Never click the entire user command; decompose recipient, message, app, object, or target first.")
-                appendLine("- If the goal is messaging, treat the contact name and message body as separate entities.")
-                appendLine("- Only type the message body after the right input field is focused.")
-                appendLine("- For messaging, never treat a visible contact name as opened. Confirm the contact chat is open and the message input exists before typing.")
-                if ("tap_at" in activeTools) {
-                    appendLine("- If a contact appears in read_screen but focus_by_text fails, try click(contact). If click fails, take_screenshot and use tap_at on the contact row.")
-                    appendLine("- Use tap_at only after a screenshot is available or after text/accessibility tools cannot reach a visible control. tap_at uses normalized Android coordinates: x=0 left, x=1000 right, y=0 top, y=1000 bottom.")
-                } else {
-                    appendLine("- If a contact appears in read_screen but focus_by_text fails, try click(contact).")
-                }
-                if (profile == ToolProfile.Annotation) {
-                    appendLine("- For annotation_add_* tools, prefer normalized coordinates in the 0.0-1.0 range unless exact pixels are required.")
-                }
+
+                appendLine("## Rules")
+                appendLine("1. Call EXACTLY ONE tool per turn. No markdown, no extra text.")
+                appendLine("2. Use ONLY tools listed in 'Allowed Tools' for the current step.")
+                appendLine("3. Confirm success after every action. If a tool fails, try a different strategy.")
+                appendLine("4. AUTONOMOUS MODE: Decide the next logical step based on the PROGRESS LOG and screen state.")
+                appendLine("5. For speaking, call reply(message=...). To finish, call tasks(plan=\"Goal complete\").")
+                appendLine()
+
+                appendLine("## Strategy")
+                appendLine("- EXPLORATION: If a target is not visible, you MUST scroll/swipe ('down' or 'up') before giving up.")
+                appendLine("- VISUALS: Use take_screenshot to see unlabeled buttons or verify screen state. Ground actions to visible IDs.")
+                appendLine("- REPETITION: Do NOT take a screenshot twice in a row if the first one didn't help. Scroll instead.")
+                appendLine("- RISKS: If a risky action is denied, finish politely.")
             }.trim()
         }
+
+        private fun documentSystemPrompt(activeTools: List<String>): String {
+            return buildString {
+                appendLine("You are Genie, a document assistant. Your ONLY job is to understand user intent and pick the right tool.")
+                appendLine()
+                appendLine("## Context")
+                appendLine("Profile: Document")
+                appendLine("Allowed Tools: ${activeTools.joinToString(", ")}")
+                appendLine()
+                appendLine("## Your Job")
+                appendLine("Analyze the user's request and call EXACTLY ONE tool:")
+                appendLine()
+                appendLine("detect_open_pdf")
+                appendLine("  → Use when the user wants to quiz or summarize content that is ALREADY VISIBLE on screen")
+                appendLine("  → Examples: \"quiz me on this\", \"summarize what's on screen\", \"quiz on current page\"")
+                appendLine()
+                appendLine("list_device_pdfs")
+                appendLine("  → Use when the user mentions a SPECIFIC PDF NAME for quiz or summary")
+                appendLine("  → Examples: \"quiz me on chemistry.pdf\", \"summarize genie.pdf\", \"quiz biology document\"")
+                appendLine()
+                appendLine("reply")
+                appendLine("  → Use to answer questions or clarify unclear requests")
+                appendLine()
+                appendLine("## Rules")
+                appendLine("1. Call EXACTLY ONE tool per turn. No markdown, no extra text.")
+                appendLine("2. The orchestrator will handle ALL extraction, generation, and display.")
+                appendLine("3. You do NOT extract text, generate quizzes, or create summaries — you only pick the tool.")
+                appendLine("4. After you call detect_open_pdf or list_device_pdfs, the orchestrator takes over completely.")
+            }.trim()
+        }
+
+        private fun teachingSystemPrompt(activeTools: List<String>): String {
+            return buildString {
+                appendLine("You are Genie, a factual step-by-step tutor. You teach by placing cards on a visual board.")
+                appendLine()
+                appendLine("## Context")
+                appendLine("Profile: Teaching")
+                appendLine("Board scene_id: teaching_session  (always use this exact id)")
+                appendLine("Allowed Tools: ${activeTools.joinToString(", ")}")
+                appendLine()
+                appendLine("## Your Only Job Per Turn")
+                appendLine("Call EXACTLY ONE tool. Emit no prose, no markdown, no extra text.")
+                appendLine("You NEVER end the lesson. The user controls when to stop.")
+                appendLine()
+                appendLine("## Tool Reference")
+                appendLine("board_teach_step(scene_id, step_label, narration)")
+                appendLine("  → Adds one lesson card. The app handles layout.")
+                appendLine("  → step_label: short title like 'Definition', 'Formula', 'Example'. Max 60 chars.")
+                appendLine("  → narration: the ACTUAL teaching content. Must contain facts, definitions, formulas, or examples — NOT previews of what you will teach later. Max 1000 chars.")
+                appendLine()
+                appendLine("visualize_concept(operation, scene_id, diagram_type, title, nodes, edges)")
+                appendLine("  → Draw a diagram (flowchart, timeline, mindmap, cycle, table).")
+                appendLine("  → USE WHEN: the topic involves a process, sequence, hierarchy, or relationship that is clearer as a visual than as text.")
+                appendLine("  → Example triggers: 'how does X work' (flowchart), 'timeline of Y' (timeline), 'parts of Z' (mindmap).")
+                appendLine()
+                appendLine("## Content Rules (CRITICAL)")
+                appendLine("- Every narration MUST deliver a concrete fact, definition, formula, example, or explanation.")
+                appendLine("- NEVER write meta-commentary like 'We will explore...', 'Let's look at...', 'Next we will cover...'.")
+                appendLine("- WRONG: 'Now let's look at how to create a project schedule.'")
+                appendLine("- RIGHT: 'A project schedule breaks work into tasks with start/end dates. Use a Work Breakdown Structure (WBS) to decompose deliverables into manageable activities.'")
+                appendLine("- Each step must teach something the user did not know before reading it.")
+                appendLine()
+                appendLine("## Decision Rules")
+                appendLine("1. For 'next', 'proceed', 'continue', 'go on', 'teach me more' → call board_teach_step with the NEXT idea.")
+                appendLine("2. For a brand-new teaching request → call board_teach_step with the FIRST factual idea.")
+                appendLine("3. Do NOT re-teach an idea already listed in steps_taught (check Current Board State).")
+                appendLine("4. Do NOT invent facts. If uncertain, say so honestly in the narration.")
+                appendLine("5. Always go deeper: after covering basics, teach advanced details, real-world examples, common mistakes, and edge cases.")
+            }.trim()
+        }
+
     }
 
     fun buildPrompt(
@@ -215,7 +228,6 @@ You will receive either a planning task or an execution task. The user prompt wi
         if (hasVisionInput) {
             sb.appendLine("## Visual Context")
             sb.appendLine("A screenshot of the current screen is attached to this turn.")
-            sb.appendLine("Ground decisions against the image and prefer annotation_add_* coordinates normalized to 0.0-1.0.")
             sb.appendLine()
         }
 
@@ -305,6 +317,15 @@ You will receive either a planning task or an execution task. The user prompt wi
             sb.appendLine()
         }
 
+        if (toolProfile == ToolProfile.Teaching) {
+            sb.appendLine("## Teaching Planning Guidance")
+            sb.appendLine("- The app creates the teaching board before model action. Use scene_id teaching_session.")
+            sb.appendLine("- Call board_teach_step(scene_id, step_label, narration) with factual content in narration.")
+            sb.appendLine("- Each narration must contain a real definition, fact, formula, or example — never a preview.")
+            sb.appendLine("- One board_teach_step per turn.")
+            sb.appendLine()
+        }
+
         sb.appendLine("## Required Response")
         sb.appendLine("Call tasks with plan set to JSON only. Do not call an action tool.")
         sb.appendLine("IMPORTANT: Use standard double quotes (\") for JSON keys and values. Do not use special token tags inside the JSON string.")
@@ -344,10 +365,10 @@ You will receive either a planning task or an execution task. The user prompt wi
         if ("retrieve_fact" in availableTools) {
             sb.appendLine("- If the user asks what Genie remembers or asks about a saved preference, create a retrieve_fact step or answer from injected User Preferences.")
         }
-        sb.appendLine("- Include recipient/message/app entities when the goal implies them.")
-        sb.appendLine("- For messaging goals, separate the recipient-selection step from the message-typing step.")
-        sb.appendLine("- Add a verification/precondition step before typing: confirm the recipient chat is open and the message input is visible or focused.")
-        sb.appendLine("- Add a verification/precondition step before sending: confirm the message body was typed and the Send control is visible.")
+        if (toolProfile == ToolProfile.Teaching) {
+            sb.appendLine("- Teaching profile: the board already exists as scene_id teaching_session; use board_teach_step for new content.")
+            sb.appendLine("- Teaching profile: each step must be one board_teach_step call with factual content in the narration.")
+        }
         sb.appendLine("- Include a final verification step for user-visible completion.")
 
         return sb.toString()
@@ -358,6 +379,8 @@ You will receive either a planning task or an execution task. The user prompt wi
         injectedFacts: List<String> = emptyList(),
         hasVisionInput: Boolean = false,
         toolProfile: ToolProfile? = null,
+        screenContext: String? = null,
+        focusedNode: String? = null,
     ): String {
         val plan = state.plan
         val step = plan?.steps?.getOrNull(state.currentStepIndex)
@@ -425,81 +448,101 @@ You will receive either a planning task or an execution task. The user prompt wi
         }
         sb.appendLine()
 
-        sb.appendLine("## Plan")
-        plan.steps.forEachIndexed { index, planStep ->
-            val marker = when {
-                index < state.currentStepIndex -> "[done]"
-                index == state.currentStepIndex -> "[current]"
-                else -> "[pending]"
+        val isAutonomous = toolProfile == ToolProfile.Chat || toolProfile == ToolProfile.Reader || toolProfile == ToolProfile.Teaching
+        if (!isAutonomous) {
+            sb.appendLine("## Plan")
+            plan.steps.forEachIndexed { index, planStep ->
+                val marker = when {
+                    index == state.currentStepIndex -> "[current]"
+                    index < state.currentStepIndex -> "[done]"
+                    else -> "[pending]"
+                }
+                sb.appendLine("${index + 1}. $marker ${planStep.instruction}")
+                sb.appendLine("   Expected: ${planStep.expectedOutcome}")
             }
-            sb.appendLine("${index + 1}. $marker ${planStep.instruction}")
-            sb.appendLine("   Expected: ${planStep.expectedOutcome}")
+            sb.appendLine()
         }
-        sb.appendLine()
 
         sb.appendLine("## Current Step")
         sb.appendLine(step.instruction)
         sb.appendLine("Expected outcome: ${step.expectedOutcome}")
         if (step.allowedTools.isNotEmpty()) {
-            sb.appendLine("Allowed/preferred tools for this step: ${step.allowedTools.joinToString(", ")}")
+            sb.appendLine("Allowed tools: ${step.allowedTools.joinToString(", ")}")
         }
         sb.appendLine()
 
-        appendHistoryWindow(sb, state)
-
         if (hasVisionInput) {
             sb.appendLine("## Visual Context")
-            sb.appendLine("A screenshot of the current screen is attached to this turn.")
-            if ("tap_at" in step.allowedTools) {
-                sb.appendLine("If using tap_at, use normalized Android coordinates: x=0 left, x=1000 right, y=0 top, y=1000 bottom.")
-            }
+            sb.appendLine("A screenshot is attached with numbered boxes for clickable elements.")
+            sb.appendLine("Use click_element_by_id with the box numbers provided.")
             sb.appendLine()
         }
 
-        sb.appendLine("## Your Decision")
-        sb.appendLine("Execute only the current step. Call exactly one native tool.")
-        sb.appendLine("CRITICAL: If you have gathered enough information to answer the user's question, you MUST call reply(message=...) to speak to the user.")
-        sb.appendLine("Otherwise, if the current step is complete but you do not need to speak, call tasks with a short step-completion note.")
-        sb.appendLine("Do not finish the overall goal unless this is the last plan step and its expected outcome is complete.")
-        if ("save_fact" in step.allowedTools || "retrieve_fact" in step.allowedTools) {
-            sb.appendLine("Memory guardrails: use save_fact for durable user facts/preferences stated by the user, and retrieve_fact for explicit memory questions. Do not look for those fact words on the current screen.")
-        }
-        if ("tap_at" in step.allowedTools && "take_screenshot" in step.allowedTools) {
-            sb.appendLine("Visual tap guardrails: call take_screenshot before tap_at unless a screenshot is attached or the user gave exact normalized coordinates.")
-        }
-        if ("type_text" in step.allowedTools) {
-            sb.appendLine("Messaging guardrails: do not call type_text until read_form_state confirms a focused/available message input. Do not press Send until type_text succeeded.")
-        }
-        if ("click" in step.allowedTools) {
-            if ("tap_at" in step.allowedTools) {
-                sb.appendLine("If visible text cannot be focused, use click on that exact text; if click fails, take_screenshot and then tap_at the visible row/control.")
-            } else {
-                sb.appendLine("If visible text cannot be focused, use click on that exact text.")
-            }
+        if (toolProfile == ToolProfile.Teaching) {
+            appendTeachingBoardContext(sb)
+            // Teaching relies on KV cache for history — skip PROGRESS LOG to save tokens
+        } else {
+            appendHistoryWindow(sb, state)
         }
 
+        sb.appendLine("## Your Next Action")
+        if (toolProfile == ToolProfile.Teaching) {
+            sb.appendLine("You are in DIRECT TEACHING MODE. You NEVER end the lesson — the user controls that.")
+            sb.appendLine("1. Check steps_taught to see what has already been covered.")
+            sb.appendLine("2. Decide: if the next idea is a process/sequence/hierarchy → call visualize_concept. Otherwise → call board_teach_step.")
+            sb.appendLine("3. Narration must contain a real fact, definition, or example — never a preview.")
+            sb.appendLine("4. Do NOT re-teach a step already shown. Emit EXACTLY ONE tool call.")
+        } else if (isAutonomous) {
+            sb.appendLine("You are in AUTONOMOUS REACTIVE MODE.")
+            sb.appendLine("1. Analyze the PROGRESS LOG to see what you have already tried.")
+            sb.appendLine("2. If the previous action failed, do NOT repeat it. Try a different tool or check the screen with read_screen or take_screenshot.")
+            sb.appendLine("3. If the goal is achieved, call reply() or tasks(plan=\"Goal complete\").")
+            sb.appendLine("4. Otherwise, execute the single best next action.")
+        } else {
+            sb.appendLine("Execute the current step only. Emit exactly one native tool call.")
+        }
+        sb.appendLine()
+
         return sb.toString()
+    }
+
+    private fun appendTeachingBoardContext(sb: StringBuilder) {
+        val snapshot = VisualizerSceneStore.getSnapshot("teaching_session") ?: return
+        val board = snapshot.scene.board ?: return
+        sb.appendLine("## Current Board State")
+        sb.appendLine("scene_id: ${snapshot.scene.sceneId}")
+        sb.appendLine("title: ${snapshot.scene.title}")
+        if (board.narrationText.isNotBlank()) {
+            sb.appendLine("last_narration: ${board.narrationText.take(240)}")
+        }
+        // Show only user-content cards (content_*) so the model knows what steps are already taught
+        val contentCards = board.objects
+            .filter { it.objectId.startsWith("content_") && it.visible }
+            .joinToString("; ") { "'${it.text.take(50)}'" }
+        sb.appendLine("steps_taught: ${contentCards.ifBlank { "none yet" }}")
+        sb.appendLine()
     }
 
     private fun appendHistoryWindow(sb: StringBuilder, state: AgentState) {
         val window = slidingWindowManager.getWindow(state.history)
         if (window.isEmpty()) return
 
-        sb.appendLine("## Compact Action History")
+        sb.appendLine("## PROGRESS LOG")
         for (entry in window) {
             when (entry) {
-                is HistoryEntry.UserMessage -> sb.appendLine("[USER] ${entry.text}")
-                is HistoryEntry.PlanCreated -> sb.appendLine("[PLAN] ${entry.plan.steps.size} steps created")
-                is HistoryEntry.StepCompleted -> sb.appendLine("[STEP ${entry.stepIndex + 1}] COMPLETE: ${entry.summary}")
+                is HistoryEntry.UserMessage -> sb.appendLine("[USER GOAL] ${entry.text}")
+                is HistoryEntry.PlanCreated -> Unit // Skip plan creation logs in reactive mode
+                is HistoryEntry.StepCompleted -> sb.appendLine("[PROGRESS] Step finished: ${entry.summary}")
                 is HistoryEntry.ModelDecision -> {
                     when (val decision = entry.decision) {
-                        is Decision.Act -> sb.appendLine("[AGENT] ${decision.tool}(${decision.args})")
-                        is Decision.Finish -> sb.appendLine("[AGENT] Step completion claimed: ${decision.summary}")
-                        is Decision.Reply -> sb.appendLine("[AGENT] Replied: ${decision.message}")
+                        is Decision.Act -> sb.appendLine("[ACTION] Called ${decision.tool}(${decision.args})")
+                        is Decision.Finish -> sb.appendLine("[ACTION] Attempted to finish: ${decision.summary}")
+                        is Decision.Reply -> sb.appendLine("[ACTION] Replied: ${decision.message}")
                     }
                 }
                 is HistoryEntry.ToolResult -> {
-                    sb.appendLine("[RESULT] ${entry.toolName} -> ${formatOutcome(entry.outcome)}")
+                    val resultText = formatOutcome(entry.outcome)
+                    sb.appendLine("[RESULT] $resultText")
                 }
             }
         }

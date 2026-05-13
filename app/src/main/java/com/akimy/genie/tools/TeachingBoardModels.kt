@@ -3,6 +3,7 @@ package com.akimy.genie.tools
 import kotlinx.serialization.Serializable
 
 private val LINE_OBJECT_TYPES = setOf("line", "arrow")
+val BOARD_OBJECT_TYPES = setOf("title", "text", "box", "card", "circle", "line", "arrow", "code", "path")
 
 @Serializable
 data class BoardPoint(

@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.akimy.genie.tools.BoardObject
 import com.akimy.genie.tools.PathParser
+import com.akimy.genie.tools.VisualizerScene
+import com.akimy.genie.tools.VisualizerSceneLayout
 import com.akimy.genie.tools.VisualizerSceneStore
 import com.akimy.genie.tools.visibleObjects
 import java.util.Locale
@@ -43,6 +45,21 @@ import kotlin.math.*
 private const val TAG = "GenieDebugTool"
 private const val SCENE_ID = "debug_motion_101"
 private const val VIRTUAL_W = 560f
+
+private val CONCEPT_NODES_JSON = """[
+{"id":"sun","label":"Sunlight","kind":"input"},
+{"id":"leaf","label":"Leaf absorbs energy","kind":"process"},
+{"id":"water","label":"Water + CO2 enter","kind":"input"},
+{"id":"sugar","label":"Glucose is made","kind":"output"},
+{"id":"oxygen","label":"Oxygen is released","kind":"output"}
+]""".trimIndent()
+
+private val CONCEPT_EDGES_JSON = """[
+{"from":"sun","to":"leaf","label":"powers"},
+{"from":"water","to":"leaf","label":"feeds"},
+{"from":"leaf","to":"sugar","label":"creates"},
+{"from":"leaf","to":"oxygen","label":"releases"}
+]""".trimIndent()
 
 // ── Test data — projectile motion lesson ──
 private val OBJECTS_JSON = """[
@@ -93,6 +110,7 @@ fun DebugToolTestOverlay(onClose: () -> Unit = {}) {
     var lastResult by remember { mutableStateOf("Ready") }
     var isError by remember { mutableStateOf(false) }
     var parentWidthPx by remember { mutableFloatStateOf(0f) }
+    var demoObjectId by remember { mutableStateOf<String?>(null) }
 
     // TTS
     val context = LocalContext.current
@@ -113,8 +131,21 @@ fun DebugToolTestOverlay(onClose: () -> Unit = {}) {
     fun ok(r: com.akimy.genie.tools.SceneStoreResult) = if (r.ok) "✓ ${r.message}" else "✗ ${r.message}"
 
     val snapshot = remember(refreshKey) { VisualizerSceneStore.getSnapshot(SCENE_ID) }
-    val board = snapshot?.scene?.board
+    val scene = snapshot?.scene
+    val layout = snapshot?.layout
+    val board = scene?.board
     val objects = board?.visibleObjects() ?: emptyList()
+    val focusObjectIds = board?.focusObjectIds?.toSet() ?: emptySet()
+    val conceptProgress = remember { Animatable(1f) }
+
+    LaunchedEffect(scene?.sceneId, scene?.updatedAt, scene?.diagramType) {
+        if (scene != null && scene.board == null && layout?.nodeLayouts?.isNotEmpty() == true) {
+            conceptProgress.snapTo(0f)
+            conceptProgress.animateTo(1f, tween(durationMillis = 3200, easing = LinearEasing))
+        } else {
+            conceptProgress.snapTo(1f)
+        }
+    }
 
     // Track which objects are newly visible for animations
     var prevIds by remember { mutableStateOf(emptySet<String>()) }
@@ -161,15 +192,26 @@ fun DebugToolTestOverlay(onClose: () -> Unit = {}) {
                     }
                     Canvas(modifier = Modifier.fillMaxWidth().height(canvasHDp)) {
                         drawGrid(scale)
-                        animatedObjects.forEach { (obj, anim) -> drawObj(obj, scale, anim) }
+                        animatedObjects.forEach { (obj, anim) -> drawObj(obj, scale, anim, obj.objectId in focusObjectIds) }
                     }
                     // Per-object animated overlays for stroke-draw animation
                     animatedObjects.filter { it.second.isNew && it.second.type == "draw" }.forEach { (obj, _) ->
                         AnimatedPathOverlay(obj, scale, Modifier.fillMaxWidth().height(canvasHDp))
                     }
                 }
+            } else if (parentWidthPx > 0f && scene != null && layout != null && layout.nodeLayouts.isNotEmpty()) {
+                val virtualWidth = maxConceptRight(layout).coerceAtLeast(VIRTUAL_W)
+                val virtualHeight = maxConceptBottom(layout).coerceAtLeast(260f)
+                val scale = parentWidthPx / virtualWidth
+                val canvasHDp = with(LocalDensity.current) { ((virtualHeight + 40f) * scale).toDp() }
+
+                Box(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    Canvas(modifier = Modifier.fillMaxWidth().height(canvasHDp)) {
+                        drawConceptScene(scene, layout, scale, conceptProgress.value)
+                    }
+                }
             } else if (board == null) {
-                Text("Tap \"Create\" below", color = Color(0xFF64748B), fontSize = 14.sp, modifier = Modifier.align(Alignment.Center))
+                Text("Tap \"Concept\" or \"Create\" below", color = Color(0xFF64748B), fontSize = 14.sp, modifier = Modifier.align(Alignment.Center))
             }
 
             Text(lastResult, color = if (isError) Color(0xFFF87171) else Green, fontSize = 10.sp, maxLines = 1,
@@ -179,8 +221,80 @@ fun DebugToolTestOverlay(onClose: () -> Unit = {}) {
         // ═══ BOTTOM STRIP ═══
         Row(modifier = Modifier.fillMaxWidth().background(StripBg).horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 5.dp),
             horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-            Chip("Create", Accent) { exec("create") { ok(VisualizerSceneStore.teachWithBoard(SCENE_ID, "Projectile Motion", "dark_classroom", OBJECTS_JSON, STEPS_JSON, "")) } }
-            Chip("Clear", Danger) { exec("clear") { ok(VisualizerSceneStore.clearScene(SCENE_ID)) } }
+            Chip("Concept", Accent) { exec("visualize_concept") {
+                VisualizerSceneStore.clearScene(SCENE_ID)
+                demoObjectId = null
+                ok(VisualizerSceneStore.createScene(
+                    sceneId = SCENE_ID,
+                    diagramType = "flowchart",
+                    title = "Photosynthesis Flow",
+                    nodesJson = CONCEPT_NODES_JSON,
+                    edgesJson = CONCEPT_EDGES_JSON,
+                ))
+            } }
+            Chip("Create", Accent) { exec("create") {
+                val result = VisualizerSceneStore.teachWithBoard(SCENE_ID, "Projectile Motion", "dark_classroom", OBJECTS_JSON, STEPS_JSON, "")
+                if (result.ok) demoObjectId = null
+                ok(result)
+            } }
+            Chip("Clear", Danger) { exec("clear") {
+                val result = VisualizerSceneStore.clearScene(SCENE_ID)
+                if (result.ok) demoObjectId = null
+                ok(result)
+            } }
+            Sep()
+            Chip("Add", Accent) { exec("add_object") {
+                val newId = "debug_note_${System.currentTimeMillis() % 10000}"
+                val y = objects.maxOfOrNull { maxObjBottom(it) }?.plus(20f) ?: 380f
+                val result = VisualizerSceneStore.boardAddObject(
+                    sceneId = SCENE_ID,
+                    objectId = newId,
+                    objectType = "card",
+                    text = "Manual add_object demo",
+                    x = 20f,
+                    y = y,
+                    width = 240f,
+                    height = 56f,
+                    styleJson = """{"fillColor":"#06281F","strokeColor":"#31E7B6","textColor":"#D1FAE5","cornerRadius":10,"textSize":13,"strokeWidth":2}""",
+                    stepId = null,
+                    animation = "reveal",
+                )
+                if (result.ok) demoObjectId = newId
+                ok(result)
+            } }
+            Chip("Update", Accent) { exec("update_object") {
+                ok(VisualizerSceneStore.boardUpdateObject(
+                    sceneId = SCENE_ID,
+                    objectId = "given_box",
+                    objectType = null,
+                    text = "Updated: v0 = 20 m/s, angle = 45 deg",
+                    x = 20f,
+                    y = 65f,
+                    width = 270f,
+                    height = 54f,
+                    styleJson = """{"fillColor":"#102A43","strokeColor":"#31E7B6","textColor":"#D1FAE5","cornerRadius":10,"textSize":13,"strokeWidth":2}""",
+                    stepId = null,
+                    animation = "pulse",
+                ))
+            } }
+            Chip("Remove", Danger) { exec("remove_object") {
+                val id = demoObjectId
+                if (id == null) {
+                    "Tap Add first"
+                } else {
+                    val result = VisualizerSceneStore.boardRemoveObject(SCENE_ID, id)
+                    if (result.ok) demoObjectId = null
+                    ok(result)
+                }
+            } }
+            Chip("Focus", AccentAlt) { exec("focus_object") { ok(VisualizerSceneStore.boardFocusObject(SCENE_ID, "peak_dot")) } }
+            Chip("Narrate", Accent) { exec("set_narration") {
+                val text = "Debug narration updated manually for the current teaching board state."
+                val result = VisualizerSceneStore.boardSetNarration(SCENE_ID, text)
+                if (result.ok) speak(text)
+                ok(result)
+            } }
+            Chip("Replay", AccentAlt) { exec("replay") { val r = ok(VisualizerSceneStore.boardReplayStep(SCENE_ID)); speakStep(speak = ::speak); r } }
             Sep()
             Chip("S1", AccentAlt) { exec("s1") { val r = ok(VisualizerSceneStore.boardRevealStep(SCENE_ID, "step_1")); speakStep(speak = ::speak); r } }
             Chip("S2", AccentAlt) { exec("s2") { val r = ok(VisualizerSceneStore.boardRevealStep(SCENE_ID, "step_2")); speakStep(speak = ::speak); r } }
@@ -212,6 +326,125 @@ private fun maxObjBottom(obj: BoardObject): Float {
         return nums.filterIndexed { i, _ -> i % 2 == 1 }.maxOrNull() ?: 0f
     }
     return obj.position.y + obj.size.height
+}
+
+private fun maxConceptRight(layout: VisualizerSceneLayout): Float {
+    return layout.nodeLayouts.maxOfOrNull { it.x + it.width }?.plus(56f) ?: VIRTUAL_W
+}
+
+private fun maxConceptBottom(layout: VisualizerSceneLayout): Float {
+    return layout.nodeLayouts.maxOfOrNull { it.y + it.height }?.plus(56f) ?: 260f
+}
+
+private fun DrawScope.drawConceptScene(
+    scene: VisualizerScene,
+    layout: VisualizerSceneLayout,
+    scale: Float,
+    buildProgress: Float,
+) {
+    drawRect(Color(0xFFFCFDFE))
+    val focusIds = scene.focusNodeIds.toSet()
+    val orderedNodes = layout.nodeLayouts.sortedWith(compareBy({ it.x }, { it.y }))
+    val nodeRevealById = orderedNodes.mapIndexed { index, node ->
+        node.id to staggeredReveal(buildProgress, index * 2, orderedNodes.size * 2 + layout.edgeLayouts.size)
+    }.toMap()
+
+    layout.edgeLayouts.forEachIndexed { index, edge ->
+        val edgeProgress = staggeredReveal(buildProgress, (index * 2) + 1, orderedNodes.size * 2 + layout.edgeLayouts.size)
+        if (edgeProgress <= 0f) return@forEachIndexed
+
+        val isFocused = edge.from in focusIds || edge.to in focusIds
+        val color = (if (isFocused) Color(0xFF0B8A5A) else Color(0xFF334155)).copy(alpha = edgeProgress)
+        val stroke = (if (isFocused) 3.1f else 2.0f) * scale
+        val points = edge.points
+        val segmentCount = points.lastIndex.coerceAtLeast(1)
+
+        for (i in 0 until points.lastIndex) {
+            val from = points[i]
+            val to = points[i + 1]
+            val segmentProgress = ((edgeProgress * segmentCount) - i).coerceIn(0f, 1f)
+            if (segmentProgress <= 0f) continue
+            val endX = from.x + ((to.x - from.x) * segmentProgress)
+            val endY = from.y + ((to.y - from.y) * segmentProgress)
+            drawLine(
+                color = color,
+                start = Offset(from.x * scale, from.y * scale),
+                end = Offset(endX * scale, endY * scale),
+                strokeWidth = stroke.coerceAtLeast(1.5f),
+                pathEffect = PathEffect.cornerPathEffect(10f * scale),
+            )
+        }
+
+        if (points.size >= 2 && edgeProgress >= 0.98f) {
+            val tip = points.last()
+            val arrow = 8f * scale
+            val tipOffset = Offset(tip.x * scale, tip.y * scale)
+            drawLine(color, tipOffset, Offset(tipOffset.x - arrow, tipOffset.y - arrow), stroke)
+            drawLine(color, tipOffset, Offset(tipOffset.x - arrow, tipOffset.y + arrow), stroke)
+        }
+    }
+
+    orderedNodes.forEach { node ->
+        val nodeReveal = nodeRevealById[node.id] ?: 1f
+        if (nodeReveal <= 0f) return@forEach
+
+        val isFocused = node.id in focusIds
+        val bg = (if (isFocused) Color(0xFFDCFCE7) else Color.White).copy(alpha = nodeReveal)
+        val border = (if (isFocused) Color(0xFF0B8A5A) else Color(0xFF1E293B)).copy(alpha = nodeReveal)
+        val popScale = 0.88f + (0.12f * nodeReveal)
+        val fullWidth = node.width * scale
+        val fullHeight = node.height * scale
+        val size = Size(fullWidth * popScale, fullHeight * popScale)
+        val topLeft = Offset(
+            (node.x * scale) + ((fullWidth - size.width) / 2f),
+            (node.y * scale) + ((fullHeight - size.height) / 2f),
+        )
+
+        drawRoundRect(
+            color = bg,
+            topLeft = topLeft,
+            size = size,
+            cornerRadius = CornerRadius(14f * scale, 14f * scale),
+        )
+        drawRoundRect(
+            color = border,
+            topLeft = topLeft,
+            size = size,
+            cornerRadius = CornerRadius(14f * scale, 14f * scale),
+            style = Stroke(width = if (isFocused) 2.7f * scale else 1.5f * scale),
+        )
+
+        val label = scene.nodes.firstOrNull { it.id == node.id }?.label ?: node.id
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            color = android.graphics.Color.argb(
+                (255 * nodeReveal).toInt().coerceIn(0, 255),
+                15,
+                23,
+                42,
+            )
+            textSize = (22f * scale).coerceAtLeast(12f)
+        }
+        val lines = wrapText(label, paint, size.width - (24f * scale))
+        val lineHeight = paint.textSize * 1.2f
+        val startY = topLeft.y + (size.height / 2f) - ((lines.size - 1) * lineHeight / 2f) + (paint.textSize / 3f)
+        lines.forEachIndexed { idx, line ->
+            drawContext.canvas.nativeCanvas.drawText(
+                line,
+                topLeft.x + (12f * scale),
+                startY + (idx * lineHeight),
+                paint,
+            )
+        }
+    }
+}
+
+private fun staggeredReveal(progress: Float, index: Int, count: Int): Float {
+    val span = 0.28f
+    val step = if (count <= 1) 0f else (1f - span) / (count - 1)
+    val start = index * step
+    val raw = ((progress - start) / span).coerceIn(0f, 1f)
+    return raw * raw * (3f - (2f * raw))
 }
 
 // ═══════════════════════════════════════════
@@ -249,7 +482,7 @@ private fun DrawScope.drawGrid(scale: Float) {
     var x = step; while (x < size.width) { drawLine(c, Offset(x, 0f), Offset(x, size.height)); x += step }
 }
 
-private fun DrawScope.drawObj(obj: BoardObject, s: Float, anim: AnimState) {
+private fun DrawScope.drawObj(obj: BoardObject, s: Float, anim: AnimState, isFocused: Boolean = false) {
     val alpha = if (anim.isNew && anim.type == "reveal") {
         // Simple instant reveal for non-animated path (animated paths use overlay)
         1f
@@ -267,6 +500,20 @@ private fun DrawScope.drawObj(obj: BoardObject, s: Float, anim: AnimState) {
         "arrow" -> drawArrowObj(obj, s)
         "line" -> drawLineObj(obj, s)
         "title", "text", "code" -> drawLabel(obj, obj.position.x * s, obj.position.y * s, obj.size.width * s, obj.size.height * s, s)
+    }
+
+    if (isFocused && obj.objectType.lowercase() != "path") {
+        val x = obj.position.x * s
+        val y = obj.position.y * s
+        val w = obj.size.width.coerceAtLeast(24f) * s
+        val h = obj.size.height.coerceAtLeast(24f) * s
+        drawRoundRect(
+            color = Color(0xFFFDE047),
+            topLeft = Offset(x - 4f, y - 4f),
+            size = Size(w + 8f, h + 8f),
+            cornerRadius = CornerRadius(10f * s),
+            style = Stroke(width = 2.5f * s, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f * s, 7f * s))),
+        )
     }
 }
 

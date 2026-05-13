@@ -5,27 +5,37 @@ import android.content.Intent
 import android.graphics.Paint
 import android.net.Uri
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
@@ -34,7 +44,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -61,18 +74,75 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.akimy.genie.tools.SceneSnapshot
+import com.akimy.genie.service.GenieAccessibilityService
 import com.akimy.genie.tools.VisualizerExportManager
 import com.akimy.genie.tools.VisualizerSceneMeta
 import com.akimy.genie.tools.VisualizerSceneStore
+import com.akimy.genie.tools.visibleObjects
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.Locale
+
+private val CanvasDarkScheme = darkColorScheme(
+    primary = Color(0xFF6D4DBA),
+    secondary = Color(0xFF38BDF8),
+    tertiary = Color(0xFF31E7B6),
+    background = Color(0xFF0F1117),
+    surface = Color(0xFF181A20),
+    surfaceVariant = Color(0xFF23262F),
+    onBackground = Color(0xFFF1F1F4),
+    onSurface = Color(0xFFE4E4E9),
+    onSurfaceVariant = Color(0xFF9CA3AF),
+    error = Color(0xFFF87171),
+    outline = Color(0xFF334155),
+    outlineVariant = Color(0xFF1E293B),
+)
+
+private val CanvasLightScheme = lightColorScheme(
+    primary = Color(0xFF6D4DBA),
+    secondary = Color(0xFF0284C7),
+    tertiary = Color(0xFF059669),
+    background = Color(0xFFF8FAFC),
+    surface = Color(0xFFFFFFFF),
+    surfaceVariant = Color(0xFFF1F5F9),
+    onBackground = Color(0xFF0F172A),
+    onSurface = Color(0xFF1E293B),
+    onSurfaceVariant = Color(0xFF64748B),
+    error = Color(0xFFDC2626),
+    outline = Color(0xFFCBD5E1),
+    outlineVariant = Color(0xFFE2E8F0),
+)
 
 class VisualizerCanvasActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         VisualizerSceneStore.initialize(applicationContext)
         setContent {
-            MaterialTheme {
+            val isDark = isSystemInDarkTheme()
+            val colorScheme = if (isDark) CanvasDarkScheme else CanvasLightScheme
+
+            LaunchedEffect(isDark) {
+                enableEdgeToEdge(
+                    statusBarStyle = if (isDark) {
+                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT
+                        )
+                    },
+                    navigationBarStyle = if (isDark) {
+                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT
+                        )
+                    },
+                )
+            }
+
+            MaterialTheme(colorScheme = colorScheme) {
                 VisualizerCanvasScreen(initialSceneId = intent.getStringExtra(EXTRA_SCENE_ID))
             }
         }
@@ -108,8 +178,20 @@ private fun VisualizerCanvasScreen(initialSceneId: String?) {
     }
     val sceneList = remember(refreshTick) { VisualizerSceneStore.listScenes() }
 
+    if (snapshot?.scene?.board != null) {
+        sceneId = snapshot.scene.sceneId
+        TeachingBoardScreen(
+            snapshot = snapshot,
+            onRefresh = { refreshTick = System.currentTimeMillis() },
+            onClose = { (context as? ComponentActivity)?.finish() },
+        )
+        return
+    }
+
     Surface(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding(),
         color = MaterialTheme.colorScheme.background,
     ) {
         Column(
@@ -263,6 +345,222 @@ private fun VisualizerCanvasScreen(initialSceneId: String?) {
                     }
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun TeachingBoardScreen(
+    snapshot: SceneSnapshot,
+    onRefresh: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val context = LocalContext.current
+    val board = snapshot.scene.board ?: return
+    val stepLabel = boardCurrentStepLabel(snapshot.scene) ?: "Teaching board"
+    val narration = boardNarration(snapshot.scene).orEmpty()
+    var ttsReady by remember { mutableStateOf(false) }
+    val ttsRef = remember { mutableStateOf<TextToSpeech?>(null) }
+
+    DisposableEffect(context) {
+        val tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                ttsReady = true
+                ttsRef.value?.language = Locale.US
+            }
+        }
+        ttsRef.value = tts
+        onDispose {
+            tts.stop()
+            tts.shutdown()
+        }
+    }
+
+    fun speak(text: String = narration) {
+        if (ttsReady && text.isNotBlank()) {
+            ttsRef.value?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "teaching_board")
+        }
+    }
+
+    LaunchedEffect(snapshot.scene.updatedAt, narration, ttsReady) {
+        if (narration.isNotBlank()) speak(narration)
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = {
+                        ttsRef.value?.stop()
+                        onClose()
+                    },
+                    modifier = Modifier.size(42.dp),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    contentPadding = PaddingValues(0.dp),
+                ) {
+                    Text("X", color = Color.White, fontSize = 18.sp)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = snapshot.scene.title.ifBlank { "Teaching Board" },
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = stepLabel,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(onClick = { speak() }, enabled = narration.isNotBlank()) {
+                    Text("Speak", color = MaterialTheme.colorScheme.tertiary)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .background(boardSurfaceBackground(board.theme)),
+            ) {
+                TeachingBoardCanvas(snapshot = snapshot)
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (narration.isNotBlank()) {
+                    Text(
+                        text = narration,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(
+                        enabled = board.steps.isNotEmpty(),
+                        onClick = {
+                            VisualizerSceneStore.boardPrevStep(snapshot.scene.sceneId)
+                            onRefresh()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    ) {
+                        Text("Back", color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Button(
+                        enabled = board.steps.isNotEmpty(),
+                        onClick = {
+                            val requested = GenieAccessibilityService.requestTeachingCommand("next")
+                            if (!requested) {
+                                VisualizerSceneStore.boardNextStep(snapshot.scene.sceneId)
+                                onRefresh()
+                            } else {
+                                Toast.makeText(context, "Asking Genie for the next step", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    ) {
+                        Text("Next", color = Color.White)
+                    }
+                    TextButton(
+                        enabled = board.steps.isNotEmpty(),
+                        onClick = {
+                            VisualizerSceneStore.boardReplayStep(snapshot.scene.sceneId)
+                            onRefresh()
+                        },
+                    ) {
+                        Text("Replay", color = MaterialTheme.colorScheme.tertiary)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = "${board.visibleObjects().size}/${board.objects.size}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TeachingBoardCanvas(snapshot: SceneSnapshot) {
+    val density = LocalDensity.current
+    val viewport = boardViewport(snapshot.scene)
+    val canvasWidthDp = with(density) { viewport.widthPx.toDp() }
+    val canvasHeightDp = with(density) { viewport.heightPx.toDp() }
+    var scale by remember(snapshot.scene.sceneId) { mutableFloatStateOf(1f) }
+    var translateX by remember(snapshot.scene.sceneId) { mutableFloatStateOf(0f) }
+    var translateY by remember(snapshot.scene.sceneId) { mutableFloatStateOf(0f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+
+            .pointerInput(snapshot.scene.sceneId) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    scale = (scale * zoom).coerceIn(0.65f, 2.8f)
+                    translateX += pan.x
+                    translateY += pan.y
+                }
+            },
+    ) {
+        Canvas(
+            modifier = Modifier
+                .size(canvasWidthDp, canvasHeightDp)
+                .background(boardCanvasBackground(snapshot.scene.board?.theme))
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = translateX
+                    translationY = translateY
+                }
+                .align(Alignment.TopStart),
+        ) {
+            drawTeachingBoard(snapshot.scene)
+        }
+        TextButton(
+            onClick = {
+                scale = 1f
+                translateX = 0f
+                translateY = 0f
+            },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(10.dp)
+                .background(
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                    RoundedCornerShape(999.dp),
+                ),
+        ) {
+            Text("Reset", color = MaterialTheme.colorScheme.onSurface)
         }
     }
 }

@@ -113,9 +113,11 @@ object UINodeParser {
             .flatMap { node ->
                 buildList {
                     node.text?.takeIf(String::isNotBlank)?.let(::add)
+                    node.hintText?.takeIf(String::isNotBlank)?.let { add("($it)") }
                     node.contentDescription
-                        ?.takeIf { it.isNotBlank() && it != node.text }
+                        ?.takeIf { it.isNotBlank() && it != node.text && it != node.hintText }
                         ?.let { add("[$it]") }
+                    node.paneTitle?.takeIf(String::isNotBlank)?.let { add("<$it>") }
                 }
             }
             .joinToString("\n")
@@ -172,15 +174,18 @@ object UINodeParser {
 
     fun extractScreenContext(root: AccessibilityNodeInfo?): com.akimy.genie.tools.ScreenContext {
         val snapshot = extractSemanticScreen(root)
+        val focusedField = snapshot.focusedNode?.takeIf { node ->
+            node.isEditable || node.role == "text_field"
+        }
         return com.akimy.genie.tools.ScreenContext(
             packageName = snapshot.packageName,
             visibleTexts = snapshot.visibleNodes.mapNotNull { it.label.takeIf(String::isNotBlank) },
             clickableLabels = snapshot.actionableNodes.mapNotNull { it.label.takeIf(String::isNotBlank) },
-            focusedFieldClassName = snapshot.focusedNode?.className,
-            focusedFieldIsPassword = snapshot.focusedNode?.isPassword ?: false,
-            focusedFieldHint = snapshot.focusedNode?.hintText,
+            focusedFieldClassName = focusedField?.className,
+            focusedFieldIsPassword = focusedField?.isPassword ?: false,
+            focusedFieldHint = focusedField?.hintText,
             focusedFieldInputType = parseNodeTree(root)
-                .firstOrNull { it.isAccessibilityFocused || it.isInputFocused }
+                .firstOrNull { (it.isAccessibilityFocused || it.isInputFocused) && it.isEditable }
                 ?.inputType,
         )
     }
@@ -233,11 +238,11 @@ object UINodeParser {
     }
 
     fun findFirstNavigableNode(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        return parseNodeTree(root).firstOrNull(::isNavigable)?.nodeInfo
+        return findNavigableNodes(root).firstOrNull()
     }
 
     fun findNavigableNodes(root: AccessibilityNodeInfo?): List<AccessibilityNodeInfo> {
-        return parseNodeTree(root).filter(::isNavigable).map { it.nodeInfo }
+        return findCleanNavigableNodes(root).map { it.nodeInfo }
     }
 
     fun findNodeByRole(root: AccessibilityNodeInfo?, roleQuery: String): AccessibilityNodeInfo? {
@@ -287,9 +292,48 @@ object UINodeParser {
     }
 
     fun describeFocusedNode(root: AccessibilityNodeInfo?): String {
-        val semantic = extractSemanticScreen(root).focusedNode
+        val focused = findAccessibilityFocusedNode(root)
             ?: return "Nothing is focused right now."
-        return describeSemanticNode(semantic)
+        return describeNode(focused)
+    }
+
+    fun describeNode(node: AccessibilityNodeInfo?): String {
+        val parsedNodes = parseNodeTree(node)
+        val semantic = parsedNodes.firstOrNull()?.let(::toSemanticNode)
+            ?: return "Nothing is focused right now."
+        return describeTalkBackNode(
+            node = semantic,
+            labelOverride = aggregateTalkBackLabel(parsedNodes).takeIf(String::isNotBlank),
+        )
+    }
+
+    fun describeTalkBackNode(
+        node: SemanticNode,
+        labelOverride: String? = null,
+    ): String {
+        val stateBits = buildList {
+            if (node.isEditable) add("editable")
+            if (node.isPassword) add("password field")
+            if (node.isSelected) add("selected")
+            if (!node.isEnabled) add("disabled")
+            node.isChecked?.let { add(if (it) "checked" else "not checked") }
+            node.stateDescription?.takeIf(String::isNotBlank)?.let(::add)
+            node.hintText?.takeIf(String::isNotBlank)?.let { add("hint: $it") }
+        }
+        val availableTools = availableToolsForFocusedNode(node)
+        val actionHint = talkBackActionHint(node)
+
+        return buildString {
+            append("Focused: ${labelOverride ?: node.label.ifBlank { "Unlabeled item" }}.")
+            append(" Role: ${node.role.replace('_', ' ')}.")
+            if (stateBits.isNotEmpty()) {
+                append(" State: ${stateBits.joinToString(", ")}.")
+            }
+            if (actionHint.isNotBlank()) {
+                append(" Hint: $actionHint.")
+            }
+            append(" Available now: ${availableTools.joinToString(", ")}.")
+        }
     }
 
     fun describeSemanticNode(node: SemanticNode): String {
@@ -325,6 +369,45 @@ object UINodeParser {
             parts += "actions: ${effectiveActions.joinToString()}"
         }
         return parts.joinToString(", ")
+    }
+
+    private fun aggregateTalkBackLabel(nodes: List<UINode>): String {
+        if (nodes.isEmpty()) return ""
+
+        val root = nodes.first()
+        val descendantLabels = nodes
+            .drop(1)
+            .flatMap(::spokenLabelParts)
+            .filterNot(::isGenericSpokenLabel)
+            .distinct()
+
+        if (descendantLabels.isNotEmpty()) {
+            return descendantLabels.take(4).joinToString(", ")
+        }
+
+        return spokenLabelParts(root)
+            .filterNot(::isGenericSpokenLabel)
+            .firstOrNull()
+            .orEmpty()
+    }
+
+    private fun spokenLabelParts(node: UINode): List<String> {
+        return listOf(
+            node.text,
+            node.contentDescription,
+            node.hintText,
+            node.stateDescription,
+            node.paneTitle,
+        )
+            .mapNotNull { it?.trim() }
+            .filter { it.isNotBlank() }
+    }
+
+    private fun isGenericSpokenLabel(label: String): Boolean {
+        val normalized = label.trim().lowercase()
+        return normalized in GENERIC_SPOKEN_LABELS ||
+            normalized.endsWith("layout") ||
+            normalized.endsWith("viewgroup")
     }
 
     fun describeScreen(root: AccessibilityNodeInfo?): String {
@@ -642,7 +725,10 @@ object UINodeParser {
     private fun deriveRole(node: UINode): String {
         if (node.isHeading) return "heading"
         if (looksLikeDialog(node)) return "dialog"
-        if (node.className?.contains("EditText", ignoreCase = true) == true || node.isEditable) {
+        if (node.className?.contains("EditText", ignoreCase = true) == true ||
+            node.isEditable ||
+            node.text?.lowercase()?.contains("search") == true ||
+            node.hintText?.lowercase()?.contains("search") == true) {
             return "text_field"
         }
         if (node.className?.contains("Switch", ignoreCase = true) == true) return "switch"
@@ -700,20 +786,140 @@ object UINodeParser {
         return className.substringAfterLast('.')
     }
 
+    private fun findCleanNavigableNodes(root: AccessibilityNodeInfo?): List<UINode> {
+        val candidates = parseNodeTree(root).filter(::isNavigable)
+        if (candidates.size <= 1) return candidates
+
+        val uniqueByBounds = candidates
+            .groupBy(::boundsKey)
+            .values
+            .map { group -> group.maxByOrNull(::navigationScore) ?: group.first() }
+
+        return uniqueByBounds
+            .sortedWith(
+                compareBy<UINode> { node -> node.boundsInScreen?.top?.div(40) ?: Int.MAX_VALUE }
+                    .thenBy { node -> node.boundsInScreen?.left ?: Int.MAX_VALUE }
+                    .thenBy { node -> node.boundsInScreen?.top ?: Int.MAX_VALUE }
+                    .thenBy { node -> node.boundsInScreen?.right ?: Int.MAX_VALUE }
+            )
+    }
+
     private fun isNavigable(node: UINode): Boolean {
         if (!node.isVisibleToUser) return false
-        if (!node.isEnabled && buildLabel(node) == "Unlabeled item") return false
+        val bounds = node.boundsInScreen
+        if (bounds == null || bounds.isEmpty || bounds.width() < 2 || bounds.height() < 2) return false
+        if (!node.isEnabled && !hasHumanLabel(node)) return false
 
         val role = deriveRole(node)
-        return node.isAccessibilityFocused ||
+        val isActionable = node.isAccessibilityFocused ||
             node.isInputFocused ||
-            node.isClickable ||
+            isPrimaryActionable(node) ||
             node.isEditable ||
-            node.isScrollable ||
-            node.isHeading ||
-            node.availableActions.isNotEmpty() ||
-            role in IMPORTANT_ROLES ||
-            buildLabel(node) != "Unlabeled item"
+            node.isChecked != null ||
+            role in TOGGLE_ROLES ||
+            node.isHeading
+
+        val hasActionableDescendant = hasActionableDescendants(node.nodeInfo)
+
+        if (isActionable) {
+            if (!hasActionableDescendant) return true
+            // TalkBack allows focusing actionable containers with actionable children ONLY if they have their own text label
+            if (hasHumanLabel(node)) return true
+            return false
+        }
+
+        // 2. Non-actionable nodes
+        if (!hasHumanLabel(node)) return false
+
+        // If it's a non-actionable speaking node, TalkBack consumes it into the nearest actionable parent.
+        if (hasActionableAncestor(node.nodeInfo)) return false
+
+        return true
+    }
+
+    private fun hasActionableDescendants(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val isActionable = child.isClickable || child.isLongClickable || child.isFocused || child.isAccessibilityFocused || child.isCheckable || child.isHeading
+            if (isActionable || hasActionableDescendants(child)) {
+                // Do not recycle child if it's cached/in-use, but in this check we just queried it.
+                // However UINodeParser might keep references to these nodes, so we avoid aggressive recycling just in case.
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun hasActionableAncestor(node: AccessibilityNodeInfo?): Boolean {
+        var parent = node?.parent
+        while (parent != null) {
+            val isActionable = parent.isClickable || parent.isLongClickable || parent.isFocused || parent.isAccessibilityFocused || parent.isCheckable || parent.isHeading
+            if (isActionable) {
+                return true
+            }
+            val nextParent = parent.parent
+            parent = nextParent
+        }
+        return false
+    }
+
+    private fun navigationScore(node: UINode): Int {
+        var score = 0
+        if (node.isAccessibilityFocused || node.isInputFocused) score += 120
+        if (node.isEditable) score += 100
+        if (node.isChecked != null) score += 95
+        if (node.isClickable) score += 90
+        if (node.isLongClickable) score += 80
+        if (node.availableActions.any { it in DIRECT_ACTIONS }) score += 70
+        if (deriveRole(node) in IMPORTANT_ROLES) score += 40
+        if (node.isHeading) score += 30
+        if (hasHumanLabel(node)) score += 20
+        if (node.isScrollable) score += 5
+        return score
+    }
+
+    private fun isPrimaryActionable(node: UINode): Boolean {
+        return node.isClickable ||
+            node.isLongClickable ||
+            node.isEditable ||
+            node.isChecked != null ||
+            node.availableActions.any { it in DIRECT_ACTIONS }
+    }
+
+    private fun isPassiveNavigable(node: UINode): Boolean {
+        return !isPrimaryActionable(node) && !node.isAccessibilityFocused && !node.isInputFocused
+    }
+
+    private fun isContainerLike(node: UINode): Boolean {
+        val className = node.className.orEmpty()
+        return className.contains("Layout", ignoreCase = true) ||
+            className.contains("ViewGroup", ignoreCase = true) ||
+            className.contains("RecyclerView", ignoreCase = true) ||
+            className.contains("ListView", ignoreCase = true) ||
+            className.contains("ScrollView", ignoreCase = true)
+    }
+
+    private fun hasHumanLabel(node: UINode): Boolean {
+        return listOf(
+            node.text,
+            node.contentDescription,
+            node.hintText,
+            node.stateDescription,
+            node.paneTitle,
+        ).any { !it.isNullOrBlank() }
+    }
+
+    private fun boundsKey(node: UINode): String {
+        val bounds = node.boundsInScreen ?: return "no_bounds"
+        return "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"
+    }
+
+    private fun containsCompletely(outer: Rect, inner: Rect): Boolean {
+        return outer.left <= inner.left &&
+            outer.top <= inner.top &&
+            outer.right >= inner.right &&
+            outer.bottom >= inner.bottom
     }
 
     private fun buildScreenSummary(
@@ -824,6 +1030,26 @@ object UINodeParser {
         return actions.toList()
     }
 
+    private fun availableToolsForFocusedNode(node: SemanticNode): List<String> {
+        val tools = linkedSetOf("right", "left")
+        if (node.isEnabled && canActivate(node)) tools += "click"
+        if (node.isEnabled && node.isEditable) tools += "type_text"
+        return tools.toList()
+    }
+
+    private fun talkBackActionHint(node: SemanticNode): String {
+        return when {
+            node.isEditable -> "double tap to edit; type_text is available only while this field remains focused"
+            canActivate(node) -> "double tap to activate"
+            else -> ""
+        }
+    }
+
+    private fun canActivate(node: SemanticNode): Boolean {
+        return node.isClickable ||
+            node.availableActions.any { it in DIRECT_ACTIONS }
+    }
+
     private fun humanizeAction(action: String): String {
         return when (action) {
             "click" -> "activate it"
@@ -857,6 +1083,30 @@ object UINodeParser {
         "dialog",
         "slider",
         "progress_bar",
+    )
+
+    private val DIRECT_ACTIONS = setOf(
+        "click",
+        "long_click",
+        "set_text",
+        "expand",
+        "collapse",
+        "dismiss",
+        "select",
+    )
+
+    private val GENERIC_SPOKEN_LABELS = setOf(
+        "view",
+        "viewgroup",
+        "framelayout",
+        "linearlayout",
+        "relativelayout",
+        "constraintlayout",
+        "recyclerview",
+        "textview",
+        "imageview",
+        "button",
+        "unlabeled item",
     )
 
     private val TOGGLE_ROLES = setOf("switch", "toggle", "checkbox", "radio_button")

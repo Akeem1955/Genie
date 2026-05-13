@@ -504,7 +504,7 @@ fun GenieSetupScreen(
             )
 
             Text(
-                text = "Messaging is the default optimized loadout. Larger profiles expose more tools but use more model context.",
+                text = "Choose the focused tool loadout Genie should expose to the model.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier

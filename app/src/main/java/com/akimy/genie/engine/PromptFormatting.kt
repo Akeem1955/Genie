@@ -13,21 +13,31 @@ import com.google.ai.edge.litertlm.Message
 object PromptFormatting {
 
     /**
-     * Build a user message with optional image context.
+     * Build a user message with optional image and audio context.
      *
-     * Match Gallery's LiteRT-LM image prompt order: image bytes first,
-     * then text last so the text prompt is the final token context.
+     * Match Gallery's LiteRT-LM multimodal prompt order:
+     * 1. Audio bytes first (if present)
+     * 2. Image bytes next (if present)
+     * 3. Text last so the text prompt is the final token context
      */
     fun buildUserContents(
         text: String,
         imagePngBytes: List<ByteArray> = emptyList(),
+        audioBytes: List<ByteArray> = emptyList(),
     ): Contents {
-        if (imagePngBytes.isEmpty()) {
+        if (imagePngBytes.isEmpty() && audioBytes.isEmpty()) {
             return Contents.of(Content.Text(text))
         }
 
         val parts = mutableListOf<Content>()
+
+        // Add audio first
+        audioBytes.forEach { parts.add(Content.AudioBytes(it)) }
+
+        // Then images
         imagePngBytes.forEach { parts.add(Content.ImageBytes(it)) }
+
+        // Text last
         if (text.isNotBlank()) {
             parts.add(Content.Text(text))
         }

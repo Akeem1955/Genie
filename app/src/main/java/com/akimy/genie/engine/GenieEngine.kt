@@ -26,7 +26,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.CancellationException
 
 private const val TAG = "GenieEngine"
-private const val AGENT_MAX_CONTEXT_LENGTH = 32_000
+private const val AGENT_MAX_CONTEXT_LENGTH = 8_192
 private const val AGENT_MAX_TOKENS = 8_192
 private const val AGENT_TOP_K = 64
 private const val AGENT_TOP_P = 0.95
@@ -91,6 +91,8 @@ class GenieEngine {
         modelPath: String,
         systemPrompt: String,
         tools: List<ToolProvider> = emptyList(),
+        supportsAudio: Boolean = false,
+        supportsImage: Boolean = false,
     ): ErrorTaxonomy? = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         try {
@@ -106,7 +108,8 @@ class GenieEngine {
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = Backend.GPU(),
-                visionBackend = Backend.GPU(),
+                visionBackend = if (supportsImage) Backend.GPU() else null,
+                audioBackend = if (supportsAudio) Backend.CPU() else null,
                 maxNumTokens = AGENT_MAX_TOKENS,
                 cacheDir = context.cacheDir.path,
             )
@@ -231,12 +234,14 @@ class GenieEngine {
      *
      * @param text prompt text for the planner
      * @param imagePngBytes optional screenshot PNG bytes for multimodal turns
+     * @param audioBytes optional audio PCM bytes for audio input
      */
     fun sendAgentMessage(
         text: String,
         imagePngBytes: List<ByteArray> = emptyList(),
+        audioBytes: List<ByteArray> = emptyList(),
     ): Flow<AgentResponse> {
-        return sendMessageAsync(PromptFormatting.buildUserContents(text, imagePngBytes))
+        return sendMessageAsync(PromptFormatting.buildUserContents(text, imagePngBytes, audioBytes))
     }
 
     /**

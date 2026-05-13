@@ -13,7 +13,7 @@ import java.io.File
  *   {getExternalFilesDir()}/{normalizedName}/{version}/{fileName}
  */
 data class GenieModelConfig(
-    /** Model identifier (e.g., "genie/gemma-4-E4B-it") */
+    /** Model identifier (e.g., "litert-community/gemma-4-E2B-it-litert-lm") */
     val modelId: String,
 
     /** The model file name */
@@ -28,15 +28,17 @@ data class GenieModelConfig(
     /** Human-readable display name */
     val displayName: String,
 
-    /** S3 download URL for the model file */
-    val customUrl: String,
+    /** HuggingFace download URL for the model file */
+    val downloadUrl: String,
+
+    /** Whether this model supports audio input */
+    val supportsAudio: Boolean = false,
+
+    /** Whether this model supports image input */
+    val supportsImage: Boolean = false,
 ) {
     /** Normalized name for filesystem path (replace non-alphanumeric with underscores) */
     val normalizedName: String = Regex("[^a-zA-Z0-9]").replace(modelId, "_")
-
-    /** Construct the download URL. Genie is S3-only for model distribution. */
-    val downloadUrl: String
-        get() = customUrl
 
     /**
      * Get the local file path where the model is stored.
@@ -65,33 +67,36 @@ data class GenieModelConfig(
     }
 
     companion object {
-        private const val S3_BASE =
-            "https://simiebot-video-assets-072531718183-us-east-1-an.s3.us-east-1.amazonaws.com/Genie//"
-
         /**
-         * Gemma 4 — Effective 2-Bit quantized (lighter).
-         * Smaller on-device footprint (~900 MB), slightly lower quality.
+         * Gemma 4 E2B — Effective 2-Bit quantized with audio + image support.
+         * From Gallery's model allowlist (matches Google's exact config).
+         * 2.4 GB, 32K context, supports text/audio/image input.
          */
         val E2B = GenieModelConfig(
-            modelId = "genie/gemma-4-E2B-it",
+            modelId = "litert-community/gemma-4-E2B-it-litert-lm",
             modelFile = "gemma-4-E2B-it.litertlm",
-            commitHash = "v1",
+            commitHash = "7fa1d78473894f7e736a21d920c3aa80f950c0db",
             sizeInBytes = 2_583_085_056L,
             displayName = "Gemma 4 (E2B)",
-            customUrl = "${S3_BASE}gemma-4-E2B-it.litertlm",
+            downloadUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/7fa1d78473894f7e736a21d920c3aa80f950c0db/gemma-4-E2B-it.litertlm?download=true",
+            supportsAudio = true,
+            supportsImage = true,
         )
 
         /**
-         * Gemma 4 — Effective 4-Bit quantized.
-         * Higher quality, larger footprint (~1.5 GB).
+         * Gemma 4 E4B — Effective 4-Bit quantized with audio + image support.
+         * From Gallery's model allowlist (matches Google's exact config).
+         * 3.4 GB, 32K context, supports text/audio/image input.
          */
         val E4B = GenieModelConfig(
-            modelId = "genie/gemma-4-E4B-it",
+            modelId = "litert-community/gemma-4-E4B-it-litert-lm",
             modelFile = "gemma-4-E4B-it.litertlm",
-            commitHash = "v1",
+            commitHash = "9695417f248178c63a9f318c6e0c56cb917cb837",
             sizeInBytes = 3_654_467_584L,
             displayName = "Gemma 4 (E4B)",
-            customUrl = "${S3_BASE}gemma-4-E4B-it.litertlm",
+            downloadUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/9695417f248178c63a9f318c6e0c56cb917cb837/gemma-4-E4B-it.litertlm?download=true",
+            supportsAudio = true,
+            supportsImage = true,
         )
 
         /** Default model is E2B. */

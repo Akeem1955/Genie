@@ -55,30 +55,4 @@ class PlannerToolCallParsingTest {
         assertTrue(result is PlanResult.ParseError)
     }
 
-    @Test
-    fun `annotation tool call maps to act decision`() {
-        val result = planner.parseDecision(
-            Message.model(
-                toolCalls = listOf(
-                    ToolCall(
-                        "annotation_add_box",
-                        mapOf(
-                            "session_id" to "annot_demo",
-                            "op_id" to "op_1",
-                            "x" to "0.2",
-                            "y" to "0.3",
-                            "width" to "0.4",
-                            "height" to "0.2",
-                        )
-                    )
-                )
-            )
-        )
-
-        assertTrue(result is PlanResult.Success)
-        val decision = (result as PlanResult.Success).decision as Decision.Act
-        assertEquals("annotation_add_box", decision.tool)
-        assertEquals("annot_demo", decision.args["session_id"])
-        assertEquals("op_1", decision.args["op_id"])
-    }
 }

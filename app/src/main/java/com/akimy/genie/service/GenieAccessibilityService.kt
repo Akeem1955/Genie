@@ -21,6 +21,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import android.view.View
 import android.view.Gravity
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -61,9 +62,7 @@ import com.akimy.genie.tools.ToolRegistry
 import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolProfilePrefs
 import com.akimy.genie.tools.ToolServiceContext
-import com.akimy.genie.tools.BoardStyle
 import com.akimy.genie.tools.DebugPrefs
-import com.akimy.genie.ui.DebugAnnotationPanel
 import com.akimy.genie.ui.DebugDocumentPanel
 import com.akimy.genie.ui.DebugToolTestOverlay
 import com.akimy.genie.tools.ViewportInfo
@@ -75,11 +74,12 @@ import org.vosk.Recognizer
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.UUID
 import kotlin.math.max
 
 private const val TAG = "GenieA11yService"
-private const val MAX_VISION_IMAGE_EDGE_PX = 640
+private const val MAX_VISION_IMAGE_EDGE_PX = 512
 
 /**
  * Core Accessibility Service for Genie — the autonomous OS-level agent.
@@ -123,6 +123,23 @@ class GenieAccessibilityService : AccessibilityService(),
     org.vosk.android.RecognitionListener,
     ToolServiceContext {
 
+    companion object {
+        @Volatile private var activeInstance: GenieAccessibilityService? = null
+
+        fun requestTeachingCommand(command: String): Boolean {
+            val service = activeInstance ?: return false
+            if (service.agentBusy) return false
+            if (service.orchestrator == null) return false
+            service.dispatchToAgent(command)
+            return true
+        }
+
+        // AudioRecord configuration for 16kHz PCM (native Gemma format)
+        const val SAMPLE_RATE = 16000 // 16kHz - Gemma native format
+        const val CHANNEL_CONFIG = android.media.AudioFormat.CHANNEL_IN_MONO
+        const val AUDIO_FORMAT = android.media.AudioFormat.ENCODING_PCM_16BIT
+    }
+
     // -- Coroutine scopes --
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -132,6 +149,7 @@ class GenieAccessibilityService : AccessibilityService(),
 
     // -- Agent components --
     private var orchestrator: AgentOrchestrator? = null
+    private var activeToolProfile: ToolProfile = ToolProfile.DEFAULT
     private val toolRegistry = ToolRegistry()
     private val awarenessTracker = AccessibilityAwarenessTracker()
     private val narrationController = ContinuousNarrationController()
@@ -152,7 +170,6 @@ class GenieAccessibilityService : AccessibilityService(),
     private var fakeLifecycleOwner: FakeLifecycleOwner? = null
     private val uiStateFlow = MutableStateFlow<AgentUIState>(AgentUIState.Initializing)
     private var mediaPlayer: MediaPlayer? = null
-    private var annotationOverlayController: AnnotationOverlayController? = null
     @Volatile private var latestScreenshotPngBytes: ByteArray? = null
     private val fingerprintGestureCallback = object : FingerprintGestureController.FingerprintGestureCallback() {
         override fun onGestureDetectionAvailabilityChanged(available: Boolean) {
@@ -209,13 +226,14 @@ class GenieAccessibilityService : AccessibilityService(),
 
     override fun onServiceConnected() {
         Log.d(TAG, "=== Genie Service Connected ===")
+        activeInstance = this
 
         // Initialize stores (needed for both normal and debug mode)
         EventLogger.init(serviceScope)
         VisualizerSceneStore.initialize(applicationContext)
         ScreenMapStore.initialize(applicationContext)
 
-        // ── Debug mode: skip LLM, voice, and show manual tool test panel ──
+        // ── Debug mode: skip everything and show overlay ──
         if (DebugPrefs.isDebugMode(this)) {
             Log.d(TAG, "=== DEBUG MODE ACTIVE — Skipping LLM bootstrap ===")
             setupDebugOverlay()
@@ -244,6 +262,14 @@ class GenieAccessibilityService : AccessibilityService(),
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val eventPackage = event?.packageName?.toString().orEmpty()
+        if (
+            event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            eventPackage.isNotBlank() &&
+            eventPackage != packageName
+        ) {
+            Log.d(TAG, "Window changed: $eventPackage")
+        }
         val record = awarenessTracker.onAccessibilityEvent(event, rootInActiveWindow ?: event?.source)
         if (!agentBusy) {
             narrateAwarenessRecord(record)
@@ -256,6 +282,9 @@ class GenieAccessibilityService : AccessibilityService(),
 
     override fun onDestroy() {
         Log.d(TAG, "=== Genie Service Destroying ===")
+        if (activeInstance === this) {
+            activeInstance = null
+        }
         unregisterFingerprintGestures()
         speechService?.stop()
         speechService = null
@@ -266,8 +295,6 @@ class GenieAccessibilityService : AccessibilityService(),
         removeComposeOverlay()
         mediaPlayer?.release()
         mediaPlayer = null
-        annotationOverlayController?.detach()
-        annotationOverlayController = null
         super.onDestroy()
     }
 
@@ -283,6 +310,7 @@ class GenieAccessibilityService : AccessibilityService(),
             // Step 1: Check model — user must have selected and downloaded via MainActivity
             val modelConfig = ModelPrefs.getSelectedConfig(this@GenieAccessibilityService)
             val toolProfile = ToolProfilePrefs.getSelectedProfile(this@GenieAccessibilityService)
+            activeToolProfile = toolProfile
             val plannerToolProviders = geniePlannerToolProviders(toolProfile)
             Log.d(TAG, "Using tool profile: ${toolProfile.displayName} (${toolProfile.toolNames.size} tools)")
 
@@ -301,6 +329,8 @@ class GenieAccessibilityService : AccessibilityService(),
                 modelPath = modelPath,
                 systemPrompt = PromptBuilder.systemPromptForProfile(toolProfile),
                 tools = plannerToolProviders,
+                supportsAudio = modelConfig.supportsAudio,
+                supportsImage = modelConfig.supportsImage,
             )
             if (error != null) {
                 Log.e(TAG, "Engine init failed: $error")
@@ -325,18 +355,30 @@ class GenieAccessibilityService : AccessibilityService(),
                 toolProfile = toolProfile,
             )
 
-            // Step 4: Initialize voice
+            // Step 4: Initialize voice (skip for UI-driven profiles)
             withContext(Dispatchers.Main) {
-                initVosk(this@GenieAccessibilityService)
-                initTts()
-                initStt()
-
-                // Finalize initialization
-                setUiState(AgentUIState.Idle)
+                if (toolProfile == ToolProfile.Scribe || toolProfile == ToolProfile.Health) {
+                    genieEngine.resetConversation(
+                        systemPrompt = PromptBuilder.systemPromptForProfile(toolProfile),
+                        tools = emptyList(),
+                        constrainedDecoding = false,
+                    )
+                    Log.d(TAG, "${toolProfile.displayName} mode: skipping voice, showing overlay")
+                    setupDebugOverlay()
+                } else {
+                    // Normal profiles: init voice and set idle state
+                    initVosk(this@GenieAccessibilityService)
+                    initTts()
+                    initStt()
+                    setUiState(AgentUIState.Idle)
+                }
             }
 
             val duration = System.currentTimeMillis() - startTime
-            EventLogger.emit(GenieEvent.BootstrapPhase("full_bootstrap", duration))
+            EventLogger.emit(GenieEvent.BootstrapPhase(
+                if (toolProfile == ToolProfile.Scribe || toolProfile == ToolProfile.Health) "ui_bootstrap" else "full_bootstrap",
+                duration
+            ))
             Log.d(TAG, "Bootstrap complete in ${duration}ms")
         }
     }
@@ -548,27 +590,26 @@ class GenieAccessibilityService : AccessibilityService(),
             } catch (e: Exception) {
                 Log.e(TAG, "Agent execution failed", e)
                 "Agent failed: ${e.message ?: "unknown error"}"
-            } finally {
-                withContext(Dispatchers.Main) {
-                    agentBusy = false
-                    
-                    // Small delay to let any pending TTS begin buffering
-                    kotlinx.coroutines.delay(300)
-                    
-                    // Do not overwrite Speaking state if TTS is about to read the reply
-                    if (uiStateFlow.value !is AgentUIState.Speaking) {
-                        setUiState(AgentUIState.Idle)
-                    }
-                    
-                    // Only restart if TTS hasn't started speaking the result. 
-                    // If it is speaking, UtteranceProgressListener.onDone will restart it.
-                    if (tts?.isSpeaking != true) {
-                        startWakeWordListening()
-                    }
-                }
             }
 
             Log.d(TAG, "Agent result: $result")
+
+            // Speak the final result and update UI state
+            withContext(Dispatchers.Main) {
+                agentBusy = false
+                setUiState(AgentUIState.Speaking(result))
+                readTextAloud(result)
+
+                // Small delay to let TTS begin
+                kotlinx.coroutines.delay(300)
+
+                // Only restart if TTS hasn't started speaking
+                // If it is speaking, UtteranceProgressListener.onDone will restart it
+                if (tts?.isSpeaking != true) {
+                    setUiState(AgentUIState.Idle)
+                    startWakeWordListening()
+                }
+            }
         }
     }
 
@@ -596,6 +637,7 @@ class GenieAccessibilityService : AccessibilityService(),
                 GenieOverlayUI(uiStateFlow)
             }
         }
+        composeOverlay?.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
 
         val lp = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -708,18 +750,10 @@ class GenieAccessibilityService : AccessibilityService(),
         fakeLifecycleOwner = FakeLifecycleOwner()
 
         val selectedProfile = ToolProfilePrefs.getSelectedProfile(this)
+        activeToolProfile = selectedProfile
         Log.d(TAG, "Debug mode — selected profile: ${selectedProfile.displayName}")
 
-        // Init annotation controller for Annotation profile
-        val annotationCtrl = if (selectedProfile == ToolProfile.Annotation) {
-            annotationOverlayController ?: AnnotationOverlayController(this).also {
-                annotationOverlayController = it
-            }
-        } else null
-
         val closeAction = {
-            annotationOverlayController?.detach()
-            annotationOverlayController = null
             removeComposeOverlay()
             disableSelf()
         }
@@ -730,16 +764,109 @@ class GenieAccessibilityService : AccessibilityService(),
             setViewTreeViewModelStoreOwner(fakeLifecycleOwner)
             setContent {
                 when (selectedProfile) {
-                    ToolProfile.Annotation -> {
-                        DebugAnnotationPanel(
-                            controller = annotationCtrl!!,
-                            onClose = closeAction,
-                        )
-                    }
                     ToolProfile.Document -> {
                         DebugDocumentPanel(
                             onClose = closeAction,
                             onDetectPdf = { detectPdfOnScreen() },
+                        )
+                    }
+                    ToolProfile.Scribe -> {
+                        com.akimy.genie.ui.ScribeOverlay(
+                            onClose = closeAction,
+                            onStartRecording = { config ->
+                                serviceScope.launch {
+                                    startAudioRecording()
+                                }
+                            },
+                            onStopRecording = {
+                                serviceScope.launch {
+                                    val audioPath = stopAudioRecording()
+                                    if (audioPath != null) {
+                                        val config = com.akimy.genie.tools.ScribeSessionStore.getConfig()
+                                        if (config != null) {
+                                            try {
+                                                val transcription = transcribeAudio(audioPath, config.inputLanguage)
+                                                val result = when (config.mode) {
+                                                    com.akimy.genie.tools.ScribeMode.GENERAL -> {
+                                                        val insights = extractInsights(transcription, config.outputLanguage)
+                                                        com.akimy.genie.tools.ScribeResult.General(insights)
+                                                    }
+                                                    com.akimy.genie.tools.ScribeMode.DOCTOR_SCRIBE -> {
+                                                        val soapNote = formatSoapNote(transcription, config.outputLanguage)
+                                                        com.akimy.genie.tools.ScribeResult.Medical(soapNote)
+                                                    }
+                                                }
+                                                com.akimy.genie.tools.ScribeSessionStore.setResult(result)
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Error processing recording", e)
+                                                com.akimy.genie.tools.ScribeSessionStore.setResult(
+                                                    com.akimy.genie.tools.ScribeResult.Error(e.message ?: "Unknown error")
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    ToolProfile.Health -> {
+                        com.akimy.genie.ui.HealthOverlay(
+                            onAnalyzeFoodFromScreen = {
+                                serviceScope.launch {
+                                    try {
+                                        val bitmap = ScreenCapture.captureScreen(this@GenieAccessibilityService)
+                                        if (bitmap != null) {
+                                            analyzeFoodImage(bitmap)
+                                        } else {
+                                            com.akimy.genie.tools.HealthSessionStore.setResult(
+                                                com.akimy.genie.tools.HealthResult.Error("Failed to capture screen")
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Error analyzing food from screen", e)
+                                        com.akimy.genie.tools.HealthSessionStore.setResult(
+                                            com.akimy.genie.tools.HealthResult.Error(e.message ?: "Unknown error")
+                                        )
+                                    }
+                                }
+                            },
+                            onRequestGalleryPick = {
+                                com.akimy.genie.ImagePickerActivity.pendingCallback = { uri ->
+                                    serviceScope.launch {
+                                        try {
+                                            val bitmap = loadBitmapFromUri(uri)
+                                            if (bitmap != null) {
+                                                analyzeFoodImage(bitmap)
+                                            } else {
+                                                com.akimy.genie.tools.HealthSessionStore.setResult(
+                                                    com.akimy.genie.tools.HealthResult.Error("Failed to load image")
+                                                )
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Error analyzing food from gallery", e)
+                                            com.akimy.genie.tools.HealthSessionStore.setResult(
+                                                com.akimy.genie.tools.HealthResult.Error(e.message ?: "Unknown error")
+                                            )
+                                        }
+                                    }
+                                }
+                                val intent = android.content.Intent(this@GenieAccessibilityService, com.akimy.genie.ImagePickerActivity::class.java).apply {
+                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                startActivity(intent)
+                            },
+                            onSearchHealthTopic = { query ->
+                                serviceScope.launch {
+                                    searchHealthTopic(query)
+                                }
+                            },
+                            onStartVoiceSearch = {
+                                startAndroidSTTForHealthQuery()
+                            },
+                            onToggleFullscreen = { isFullscreen ->
+                                updateHealthWindowSize(isFullscreen)
+                            },
+                            onClose = closeAction
                         )
                     }
                     else -> {
@@ -749,19 +876,33 @@ class GenieAccessibilityService : AccessibilityService(),
                 }
             }
         }
+        composeOverlay?.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
 
         val isCompact = selectedProfile == ToolProfile.Document
+        val isFullScreen = selectedProfile == ToolProfile.Scribe
+        val isFloating = selectedProfile == ToolProfile.Health
         val lp = WindowManager.LayoutParams().apply {
             type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             format = PixelFormat.TRANSLUCENT
             width = WindowManager.LayoutParams.MATCH_PARENT
-            gravity = Gravity.BOTTOM
             if (isCompact) {
-                // Compact bottom strip — let user interact with apps behind it
+                gravity = Gravity.BOTTOM
                 height = WindowManager.LayoutParams.WRAP_CONTENT
                 flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            } else if (isFullScreen) {
+                gravity = Gravity.CENTER
+                height = WindowManager.LayoutParams.MATCH_PARENT
+                flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            } else if (isFloating) {
+                gravity = Gravity.TOP or Gravity.START
+                height = WindowManager.LayoutParams.WRAP_CONTENT
+                width = WindowManager.LayoutParams.WRAP_CONTENT
+                flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
             } else {
+                gravity = Gravity.BOTTOM
                 height = WindowManager.LayoutParams.MATCH_PARENT
                 flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
             }
@@ -796,6 +937,30 @@ class GenieAccessibilityService : AccessibilityService(),
             fakeLifecycleOwner = null
         } catch (e: Exception) {
             Log.e(TAG, "Failed to remove compose overlay: ${e.message}")
+        }
+    }
+
+    private fun updateHealthWindowSize(isFullscreen: Boolean) {
+        val overlay = composeOverlay ?: return
+        val wm = windowManager ?: return
+
+        serviceScope.launch(Dispatchers.Main) {
+            try {
+                val lp = overlay.layoutParams as WindowManager.LayoutParams
+                if (isFullscreen) {
+                    lp.width = WindowManager.LayoutParams.MATCH_PARENT
+                    lp.height = WindowManager.LayoutParams.MATCH_PARENT
+                    lp.gravity = Gravity.CENTER
+                } else {
+                    lp.width = WindowManager.LayoutParams.WRAP_CONTENT
+                    lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+                    lp.gravity = Gravity.TOP or Gravity.START
+                }
+                wm.updateViewLayout(overlay, lp)
+                Log.d(TAG, "Health window size updated: fullscreen=$isFullscreen")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update health window size", e)
+            }
         }
     }
 
@@ -847,7 +1012,7 @@ class GenieAccessibilityService : AccessibilityService(),
             return "Screenshot failed"
         }
 
-        // Apply Set-of-Mark (SoM) bounding box annotations
+        // Apply Set-of-Mark (SoM) bounding box markup.
         ScreenSomStore.clear()
         val root = rootInActiveWindow
         if (root != null) {
@@ -1022,121 +1187,14 @@ class GenieAccessibilityService : AccessibilityService(),
         )
     }
 
-    override suspend fun annotationStartSession(sessionId: String, title: String): Boolean {
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                val controller = annotationOverlayController ?: AnnotationOverlayController(this@GenieAccessibilityService)
-                    .also { annotationOverlayController = it }
-                controller.startSession(sessionId)
-                true
-            }.getOrElse { error ->
-                Log.e(TAG, "Failed to start annotation overlay session", error)
-                false
-            }
-        }
-    }
-
-    override suspend fun annotationDrawBox(
-        sessionId: String,
-        opId: String,
-        delayMs: Long,
-        x: Float,
-        y: Float,
-        width: Float,
-        height: Float,
-        label: String,
-        style: BoardStyle,
-    ): Boolean {
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                val controller = annotationOverlayController ?: AnnotationOverlayController(this@GenieAccessibilityService)
-                    .also { annotationOverlayController = it }
-                controller.addBox(sessionId, opId, delayMs, x, y, width, height, label, style)
-                true
-            }.getOrElse { error ->
-                Log.e(TAG, "Failed to draw annotation box", error)
-                false
-            }
-        }
-    }
-
-    override suspend fun annotationDrawLabel(
-        sessionId: String,
-        opId: String,
-        delayMs: Long,
-        x: Float,
-        y: Float,
-        text: String,
-        style: BoardStyle,
-    ): Boolean {
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                val controller = annotationOverlayController ?: AnnotationOverlayController(this@GenieAccessibilityService)
-                    .also { annotationOverlayController = it }
-                controller.addLabel(sessionId, opId, delayMs, x, y, text, style)
-                true
-            }.getOrElse { error ->
-                Log.e(TAG, "Failed to draw annotation label", error)
-                false
-            }
-        }
-    }
-
-    override suspend fun annotationDrawPointer(
-        sessionId: String,
-        opId: String,
-        delayMs: Long,
-        x: Float,
-        y: Float,
-        targetX: Float,
-        targetY: Float,
-        text: String,
-        style: BoardStyle,
-    ): Boolean {
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                val controller = annotationOverlayController ?: AnnotationOverlayController(this@GenieAccessibilityService)
-                    .also { annotationOverlayController = it }
-                controller.addPointer(sessionId, opId, delayMs, x, y, targetX, targetY, text, style)
-                true
-            }.getOrElse { error ->
-                Log.e(TAG, "Failed to draw annotation pointer", error)
-                false
-            }
-        }
-    }
-
-    override suspend fun annotationClearSession(sessionId: String): Boolean {
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                annotationOverlayController?.clearSession(sessionId)
-                true
-            }.getOrElse { error ->
-                Log.e(TAG, "Failed to clear annotation session", error)
-                false
-            }
-        }
-    }
-
-    override suspend fun annotationReplaySession(sessionId: String): Boolean {
-        return withContext(Dispatchers.Main) {
-            val controller = annotationOverlayController ?: return@withContext false
-            runCatching {
-                controller.replaySession(sessionId, serviceScope)
-                true
-            }.getOrElse { error ->
-                Log.e(TAG, "Failed to replay annotation session", error)
-                false
-            }
-        }
-    }
-
     override suspend fun focusNext(): Boolean {
-        return moveFocus(step = 1)
+        val moved = moveFocus(step = 1)
+        return moved
     }
 
     override suspend fun focusPrevious(): Boolean {
-        return moveFocus(step = -1)
+        val moved = moveFocus(step = -1)
+        return moved
     }
 
     override suspend fun focusFirst(): Boolean {
@@ -1159,12 +1217,29 @@ class GenieAccessibilityService : AccessibilityService(),
 
     override suspend fun activateFocused(): Boolean {
         val root = rootInActiveWindow ?: return false
-        val focused = UINodeParser.findAccessibilityFocusedNode(root) ?: return false
-        val target = UINodeParser.findClickableAncestor(focused) ?: focused
+        val focused = UINodeParser.findAccessibilityFocusedNode(root)
+            ?: return false
 
-        return target.performAction(AccessibilityNodeInfo.ACTION_CLICK) ||
-            target.performAction(AccessibilityNodeInfo.ACTION_SELECT) ||
-            target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        Log.d(TAG, "activateFocused: focused=${nodeLog(focused)}")
+
+        // Walk up the ancestor chain trying activation at each level.
+        // Some apps mark child nodes non-clickable but handle clicks on a parent.
+        val candidates = generateSequence(focused) { it.parent }.take(6)
+        for (candidate in candidates) {
+            if (!candidate.isVisibleToUser || !candidate.isEnabled) continue
+
+            if (candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                Log.d(TAG, "activateFocused: ACTION_CLICK on ${nodeLog(candidate)}")
+                return true
+            }
+            if (candidate.performAction(AccessibilityNodeInfo.ACTION_SELECT)) {
+                Log.d(TAG, "activateFocused: ACTION_SELECT on ${nodeLog(candidate)}")
+                return true
+            }
+        }
+
+        Log.d(TAG, "activateFocused: no ancestor accepted activation")
+        return false
     }
 
     override suspend fun scrollForward(): Boolean {
@@ -1263,6 +1338,668 @@ class GenieAccessibilityService : AccessibilityService(),
     }
 
     // ========================================================================
+    // Scribe Profile Methods
+    // ========================================================================
+
+    // AudioRecord for 16kHz PCM recording (native Gemma format)
+    private var audioRecord: android.media.AudioRecord? = null
+    private var recordingThread: Thread? = null
+    private var isRecording = false
+    private val recordedPcmBuffer = mutableListOf<ByteArray>()
+
+    override suspend fun startAudioRecording(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (ContextCompat.checkSelfPermission(
+                    this@GenieAccessibilityService,
+                    Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.e(TAG, "Audio recording permission not granted")
+                return@withContext false
+            }
+
+            // Calculate buffer size
+            val minBufferSize = android.media.AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT
+            )
+
+            if (minBufferSize == android.media.AudioRecord.ERROR ||
+                minBufferSize == android.media.AudioRecord.ERROR_BAD_VALUE
+            ) {
+                Log.e(TAG, "Invalid AudioRecord buffer size")
+                return@withContext false
+            }
+
+            // Clear previous recording buffer
+            recordedPcmBuffer.clear()
+
+            // Create AudioRecord instance
+            audioRecord = android.media.AudioRecord(
+                android.media.MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT,
+                minBufferSize * 2
+            )
+
+            if (audioRecord?.state != android.media.AudioRecord.STATE_INITIALIZED) {
+                Log.e(TAG, "AudioRecord not initialized")
+                audioRecord?.release()
+                audioRecord = null
+                return@withContext false
+            }
+
+            // Start recording
+            audioRecord?.startRecording()
+            isRecording = true
+
+            // Start background thread to read audio data
+            recordingThread = Thread {
+                val buffer = ByteArray(minBufferSize)
+                while (isRecording) {
+                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    if (read > 0) {
+                        // Store PCM chunks
+                        recordedPcmBuffer.add(buffer.copyOf(read))
+                    }
+                }
+            }.apply { start() }
+
+            Log.d(TAG, "AudioRecord started: 16kHz PCM mono")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting audio recording", e)
+            audioRecord?.release()
+            audioRecord = null
+            isRecording = false
+            false
+        }
+    }
+
+    override suspend fun stopAudioRecording(): String? = withContext(Dispatchers.IO) {
+        try {
+            isRecording = false
+
+            // Wait for recording thread to finish
+            recordingThread?.join(1000)
+            recordingThread = null
+
+            // Stop AudioRecord
+            audioRecord?.apply {
+                stop()
+                release()
+            }
+            audioRecord = null
+
+            // Combine all PCM chunks into single ByteArray
+            val totalSize = recordedPcmBuffer.sumOf { it.size }
+            val combinedPcm = ByteArray(totalSize)
+            var offset = 0
+            recordedPcmBuffer.forEach { chunk ->
+                System.arraycopy(chunk, 0, combinedPcm, offset, chunk.size)
+                offset += chunk.size
+            }
+
+            Log.d(TAG, "AudioRecord stopped: ${combinedPcm.size} bytes (${combinedPcm.size / 1024} KB) PCM")
+
+            // Return sentinel value to signal in-memory PCM is ready
+            if (combinedPcm.isNotEmpty()) {
+                "pcm:${combinedPcm.size}" // Signal that PCM is in recordedPcmBuffer
+            } else {
+                Log.e(TAG, "No audio data recorded")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping audio recording", e)
+            audioRecord?.release()
+            audioRecord = null
+            isRecording = false
+            null
+        }
+    }
+
+    override suspend fun transcribeAudio(audioFilePath: String, language: String): String = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Transcribing audio (language: $language)")
+
+            // Get PCM data from in-memory buffer
+            val totalSize = recordedPcmBuffer.sumOf { it.size }
+            val pcmBytes = ByteArray(totalSize)
+            var offset = 0
+            recordedPcmBuffer.forEach { chunk ->
+                System.arraycopy(chunk, 0, pcmBytes, offset, chunk.size)
+                offset += chunk.size
+            }
+
+            if (pcmBytes.isEmpty()) {
+                return@withContext "No audio data available for transcription"
+            }
+
+            // Wrap PCM in WAV header so miniaudio can decode it
+            val wavBytes = wrapPcmInWav(pcmBytes)
+            Log.d(TAG, "WAV data size: ${wavBytes.size} bytes (${wavBytes.size / 1024} KB)")
+
+            val prompt = """
+                Transcribe the following audio recording accurately.
+                Language: $language
+
+                Provide only the transcribed text, no additional commentary or formatting.
+            """.trimIndent()
+
+            val sb = StringBuilder()
+            genieEngine.sendAgentMessage(
+                text = prompt,
+                imagePngBytes = emptyList(),
+                audioBytes = listOf(wavBytes),
+            ).collect { response ->
+                when (response) {
+                    is AgentResponse.Token -> sb.append(response.text)
+                    is AgentResponse.Done -> {}
+                    is AgentResponse.Error -> Log.e(TAG, "Transcription error: ${response.error}")
+                    is AgentResponse.ToolCallRequest -> {}
+                }
+            }
+
+            val transcription = sb.toString().trim()
+            Log.d(TAG, "Transcription complete: ${transcription.take(100)}...")
+            transcription
+        } catch (e: Exception) {
+            Log.e(TAG, "Error transcribing audio", e)
+            throw e
+        }
+    }
+
+    // Wraps raw 16kHz mono 16-bit PCM in a standard 44-byte WAV header
+    private fun wrapPcmInWav(pcmData: ByteArray): ByteArray {
+        val numChannels = 1
+        val bitsPerSample = 16
+        val byteRate = SAMPLE_RATE * numChannels * bitsPerSample / 8
+        val blockAlign = numChannels * bitsPerSample / 8
+        val dataSize = pcmData.size
+        val fileSize = 36 + dataSize
+
+        val header = java.nio.ByteBuffer.allocate(44).apply {
+            order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            // RIFF header
+            put('R'.code.toByte()); put('I'.code.toByte()); put('F'.code.toByte()); put('F'.code.toByte())
+            putInt(fileSize)
+            put('W'.code.toByte()); put('A'.code.toByte()); put('V'.code.toByte()); put('E'.code.toByte())
+            // fmt sub-chunk
+            put('f'.code.toByte()); put('m'.code.toByte()); put('t'.code.toByte()); put(' '.code.toByte())
+            putInt(16) // sub-chunk size
+            putShort(1) // PCM format
+            putShort(numChannels.toShort())
+            putInt(SAMPLE_RATE)
+            putInt(byteRate)
+            putShort(blockAlign.toShort())
+            putShort(bitsPerSample.toShort())
+            // data sub-chunk
+            put('d'.code.toByte()); put('a'.code.toByte()); put('t'.code.toByte()); put('a'.code.toByte())
+            putInt(dataSize)
+        }.array()
+
+        return header + pcmData
+    }
+
+    override suspend fun extractInsights(transcription: String, outputLanguage: String): com.akimy.genie.tools.GeneralInsights = withContext(Dispatchers.IO) {
+        try {
+            val prompt = """
+                Analyze the following transcription and extract structured insights.
+
+                Output language: $outputLanguage
+
+                Transcription:
+                $transcription
+
+                Provide your response in the following JSON format:
+                {
+                  "summary": "A concise 2-3 sentence summary",
+                  "keyPoints": ["Key point 1", "Key point 2", "Key point 3"],
+                  "actionItems": ["Action item 1", "Action item 2"]
+                }
+
+                If there are no action items, use an empty array.
+            """.trimIndent()
+
+            val sb = StringBuilder()
+            genieEngine.sendAgentMessage(
+                text = prompt,
+                imagePngBytes = emptyList(),
+            ).collect { response ->
+                when (response) {
+                    is AgentResponse.Token -> sb.append(response.text)
+                    is AgentResponse.Done -> {}
+                    is AgentResponse.Error -> Log.e(TAG, "Insights extraction error: ${response.error}")
+                    is AgentResponse.ToolCallRequest -> {}
+                }
+            }
+
+            var jsonResponse = sb.toString().trim()
+
+            // Strip markdown code blocks (```json ... ``` or ``` ... ```)
+            if (jsonResponse.startsWith("```")) {
+                val lines = jsonResponse.lines()
+                val filtered = lines.drop(1).dropLast(1)
+                jsonResponse = filtered.joinToString("\n").trim()
+            }
+
+            val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
+
+            val insights = try {
+                val jsonStart = jsonResponse.indexOf("{")
+                val jsonEnd = jsonResponse.lastIndexOf("}") + 1
+                val cleanJson = if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                    jsonResponse.substring(jsonStart, jsonEnd)
+                } else {
+                    jsonResponse
+                }
+
+                val parsed = json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(cleanJson)
+                com.akimy.genie.tools.GeneralInsights(
+                    summary = parsed["summary"]?.toString()?.removeSurrounding("\"") ?: "No summary available",
+                    keyPoints = parsed["keyPoints"]?.let { element ->
+                        if (element is kotlinx.serialization.json.JsonArray) {
+                            element.map { it.toString().removeSurrounding("\"") }
+                        } else emptyList()
+                    } ?: emptyList(),
+                    actionItems = parsed["actionItems"]?.let { element ->
+                        if (element is kotlinx.serialization.json.JsonArray) {
+                            element.map { it.toString().removeSurrounding("\"") }
+                        } else emptyList()
+                    } ?: emptyList(),
+                    transcription = transcription
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to parse insights JSON, using fallback", e)
+                com.akimy.genie.tools.GeneralInsights(
+                    summary = jsonResponse,
+                    keyPoints = emptyList(),
+                    actionItems = emptyList(),
+                    transcription = transcription
+                )
+            }
+
+            Log.d(TAG, "Insights extracted: ${insights.summary}")
+            insights
+        } catch (e: Exception) {
+            Log.e(TAG, "Error extracting insights", e)
+            throw e
+        }
+    }
+
+    override suspend fun formatSoapNote(transcription: String, outputLanguage: String): com.akimy.genie.tools.SoapNote = withContext(Dispatchers.IO) {
+        try {
+            val prompt = """
+                Format the following medical conversation transcription into a SOAP note.
+
+                Output language: $outputLanguage
+
+                Transcription:
+                $transcription
+
+                Provide your response in the following JSON format:
+                {
+                  "subjective": "Patient's complaints, symptoms, and reported history",
+                  "objective": "Clinical observations, vital signs, physical examination findings",
+                  "assessment": "Diagnosis, clinical impression, and differential diagnoses",
+                  "plan": "Treatment plan, medications, follow-up instructions, and referrals"
+                }
+
+                Extract relevant medical information and organize it appropriately. If a section has no information, provide "Not documented" for that field.
+            """.trimIndent()
+
+            val sb = StringBuilder()
+            genieEngine.sendAgentMessage(
+                text = prompt,
+                imagePngBytes = emptyList(),
+            ).collect { response ->
+                when (response) {
+                    is AgentResponse.Token -> sb.append(response.text)
+                    is AgentResponse.Done -> {}
+                    is AgentResponse.Error -> Log.e(TAG, "SOAP formatting error: ${response.error}")
+                    is AgentResponse.ToolCallRequest -> {}
+                }
+            }
+
+            var jsonResponse = sb.toString().trim()
+
+            // Strip markdown code blocks (```json ... ``` or ``` ... ```)
+            if (jsonResponse.startsWith("```")) {
+                val lines = jsonResponse.lines()
+                val filtered = lines.drop(1).dropLast(1)
+                jsonResponse = filtered.joinToString("\n").trim()
+            }
+
+            val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
+
+            val soapNote = try {
+                val jsonStart = jsonResponse.indexOf("{")
+                val jsonEnd = jsonResponse.lastIndexOf("}") + 1
+                val cleanJson = if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                    jsonResponse.substring(jsonStart, jsonEnd)
+                } else {
+                    jsonResponse
+                }
+
+                val parsed = json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(cleanJson)
+                com.akimy.genie.tools.SoapNote(
+                    subjective = parsed["subjective"]?.toString()?.removeSurrounding("\"") ?: "Not documented",
+                    objective = parsed["objective"]?.toString()?.removeSurrounding("\"") ?: "Not documented",
+                    assessment = parsed["assessment"]?.toString()?.removeSurrounding("\"") ?: "Not documented",
+                    plan = parsed["plan"]?.toString()?.removeSurrounding("\"") ?: "Not documented",
+                    transcription = transcription
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to parse SOAP JSON, using fallback", e)
+                com.akimy.genie.tools.SoapNote(
+                    subjective = "Error parsing response",
+                    objective = "Error parsing response",
+                    assessment = "Error parsing response",
+                    plan = "Error parsing response",
+                    transcription = transcription
+                )
+            }
+
+            Log.d(TAG, "SOAP note formatted successfully")
+            soapNote
+        } catch (e: Exception) {
+            Log.e(TAG, "Error formatting SOAP note", e)
+            throw e
+        }
+    }
+
+    // ========================================================================
+    // Health Profile Methods
+    // ========================================================================
+
+    private val healthLibrary by lazy { com.akimy.genie.tools.HealthLibraryManager(applicationContext) }
+
+    private suspend fun analyzeFoodImage(bitmap: android.graphics.Bitmap) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Analyzing food image")
+
+            // Convert bitmap to PNG bytes
+            val outputStream = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, outputStream)
+            val pngBytes = outputStream.toByteArray()
+
+            val prompt = """
+                Analyze this food image. Return ONLY valid JSON with this structure:
+                {
+                  "foodName": "item name",
+                  "servingSize": "100g",
+                  "totalCalories": 250,
+                  "macronutrients": [
+                    {"name": "Protein", "amount": "25", "unit": "g", "explanation": "Builds tissues", "dailyValuePercent": 50}
+                  ],
+                  "vitamins": [
+                    {"name": "Vitamin C", "amount": "10", "unit": "mg", "explanation": "Immune support", "dailyValuePercent": 15}
+                  ],
+                  "minerals": [
+                    {"name": "Iron", "amount": "5", "unit": "mg", "explanation": "Oxygen transport", "dailyValuePercent": 28}
+                  ],
+                  "otherNutrients": [
+                    {"name": "Fiber", "amount": "3", "unit": "g", "explanation": "Digestion", "dailyValuePercent": 12}
+                  ],
+                  "nutritionCoverage": {
+                    "covered": ["High protein"],
+                    "missing": ["Low vitamin C"],
+                    "summary": "Summary"
+                  }
+                }
+                Keep explanations short. Use null for missing dailyValuePercent. JSON only.
+            """.trimIndent()
+
+            // Reset conversation to vision-only mode to avoid agent context pollution
+            genieEngine.resetConversation(
+                systemPrompt = prompt,
+                tools = emptyList(),
+                constrainedDecoding = false,
+            )
+            Log.d(TAG, "analyzeFoodImage: conversation reset to vision-only mode")
+
+            val sb = StringBuilder()
+            genieEngine.sendAgentMessage(
+                text = prompt,
+                imagePngBytes = listOf(pngBytes),
+            ).collect { response ->
+                when (response) {
+                    is AgentResponse.Token -> sb.append(response.text)
+                    is AgentResponse.Done -> {}
+                    is AgentResponse.Error -> Log.e(TAG, "Food analysis error: ${response.error}")
+                    is AgentResponse.ToolCallRequest -> {}
+                }
+            }
+
+            var jsonResponse = sb.toString().trim()
+
+            // Strip markdown code blocks
+            if (jsonResponse.startsWith("```")) {
+                val lines = jsonResponse.lines()
+                val filtered = lines.drop(1).dropLast(1)
+                jsonResponse = filtered.joinToString("\n").trim()
+            }
+
+            val json = kotlinx.serialization.json.Json {
+                ignoreUnknownKeys = true
+                isLenient = true
+                coerceInputValues = true
+            }
+
+            val analysis = try {
+                // Extract complete JSON
+                val jsonStart = jsonResponse.indexOf("{")
+                val jsonEnd = jsonResponse.lastIndexOf("}") + 1
+                val cleanJson = if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                    jsonResponse.substring(jsonStart, jsonEnd)
+                } else {
+                    jsonResponse
+                }
+
+                Log.d(TAG, "Attempting to parse JSON (${cleanJson.length} chars)")
+                json.decodeFromString<com.akimy.genie.tools.FoodNutritionAnalysis>(cleanJson)
+            } catch (e: Exception) {
+                Log.e(TAG, "JSON parsing failed, extracting basic info. Response:\n${jsonResponse.take(500)}", e)
+
+                // Fallback: extract what we can and create minimal response
+                val foodNameMatch = Regex(""""foodName"\s*:\s*"([^"]+)"""").find(jsonResponse)
+                val caloriesMatch = Regex(""""totalCalories"\s*:\s*(\d+)""").find(jsonResponse)
+                val servingMatch = Regex(""""servingSize"\s*:\s*"([^"]+)"""").find(jsonResponse)
+
+                com.akimy.genie.tools.FoodNutritionAnalysis(
+                    foodName = foodNameMatch?.groupValues?.get(1) ?: "Unknown Food",
+                    servingSize = servingMatch?.groupValues?.get(1) ?: "Estimated 100g",
+                    totalCalories = caloriesMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+                    macronutrients = emptyList(),
+                    vitamins = emptyList(),
+                    minerals = emptyList(),
+                    otherNutrients = emptyList(),
+                    nutritionCoverage = com.akimy.genie.tools.NutritionCoverage(
+                        covered = emptyList(),
+                        missing = emptyList(),
+                        summary = "Analysis incomplete - model response truncated"
+                    )
+                )
+            }
+
+            com.akimy.genie.tools.HealthSessionStore.setResult(
+                com.akimy.genie.tools.HealthResult.FoodAnalysis(analysis)
+            )
+
+            Log.d(TAG, "Food analysis completed: ${analysis.foodName}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error analyzing food image", e)
+            com.akimy.genie.tools.HealthSessionStore.setResult(
+                com.akimy.genie.tools.HealthResult.Error(e.message ?: "Unknown error")
+            )
+        }
+    }
+
+    private suspend fun searchHealthTopic(query: String) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Searching health topic: $query")
+
+            // First, get topic index
+            val topicIndex = healthLibrary.loadTopicIndex()
+
+            // Ask model to identify the best matching topic
+            val topicListStr = topicIndex.topics.joinToString(", ")
+            val prompt = """
+                The user is searching for health information about: "$query"
+
+                Available health topics: $topicListStr
+
+                Identify the single best matching topic from this list. If no exact match exists, suggest the closest related topic.
+
+                Respond with ONLY the topic name from the list, nothing else.
+            """.trimIndent()
+
+            // Reset conversation to text-only mode
+            genieEngine.resetConversation(
+                systemPrompt = prompt,
+                tools = emptyList(),
+                constrainedDecoding = false,
+            )
+            Log.d(TAG, "searchHealthTopic: conversation reset to text-only mode")
+
+            val sb = StringBuilder()
+            genieEngine.sendAgentMessage(
+                text = prompt,
+                imagePngBytes = emptyList(),
+            ).collect { response ->
+                when (response) {
+                    is AgentResponse.Token -> sb.append(response.text)
+                    is AgentResponse.Done -> {}
+                    is AgentResponse.Error -> Log.e(TAG, "Topic search error: ${response.error}")
+                    is AgentResponse.ToolCallRequest -> {}
+                }
+            }
+
+            val matchedTopic = sb.toString().trim()
+                .removeSurrounding("\"")
+                .removeSurrounding("'")
+
+            Log.d(TAG, "Matched topic: $matchedTopic")
+
+            // Query the specific topic from JSON
+            val record = healthLibrary.queryTopic(matchedTopic)
+
+            if (record != null) {
+                com.akimy.genie.tools.HealthSessionStore.setResult(
+                    com.akimy.genie.tools.HealthResult.HealthTopic(record)
+                )
+                Log.d(TAG, "Health topic loaded: ${record.disease}")
+            } else {
+                com.akimy.genie.tools.HealthSessionStore.setResult(
+                    com.akimy.genie.tools.HealthResult.Error("Topic not found: $matchedTopic")
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error searching health topic", e)
+            com.akimy.genie.tools.HealthSessionStore.setResult(
+                com.akimy.genie.tools.HealthResult.Error(e.message ?: "Unknown error")
+            )
+        }
+    }
+
+    private fun startAndroidSTTForHealthQuery() {
+        Log.d(TAG, "Starting Android STT for health query")
+        com.akimy.genie.tools.HealthSessionStore.setResult(
+            com.akimy.genie.tools.HealthResult.FoodAnalysis(
+                com.akimy.genie.tools.FoodNutritionAnalysis(
+                    foodName = "Listening...",
+                    servingSize = "Speak your health topic",
+                    totalCalories = 0,
+                    macronutrients = emptyList(),
+                    vitamins = emptyList(),
+                    minerals = emptyList(),
+                    otherNutrients = emptyList(),
+                    nutritionCoverage = com.akimy.genie.tools.NutritionCoverage(
+                        covered = emptyList(),
+                        missing = emptyList(),
+                        summary = "Listening..."
+                    )
+                )
+            )
+        )
+
+        val healthSTT = SpeechRecognizer.createSpeechRecognizer(this)
+        healthSTT.setRecognitionListener(object : RecognitionListener {
+            override fun onBeginningOfSpeech() {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onError(error: Int) {
+                Log.e(TAG, "Health STT error: $error")
+                com.akimy.genie.tools.HealthSessionStore.setResult(
+                    com.akimy.genie.tools.HealthResult.Error("Voice recognition failed")
+                )
+                healthSTT.destroy()
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onResults(results: Bundle?) {
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.getOrNull(0) ?: ""
+                Log.d(TAG, "Health STT result: $text")
+                healthSTT.destroy()
+
+                if (text.isNotBlank()) {
+                    serviceScope.launch {
+                        com.akimy.genie.tools.HealthSessionStore.setResult(
+                            com.akimy.genie.tools.HealthResult.FoodAnalysis(
+                                com.akimy.genie.tools.FoodNutritionAnalysis(
+                                    foodName = "Searching...",
+                                    servingSize = "Topic: $text",
+                                    totalCalories = 0,
+                                    macronutrients = emptyList(),
+                                    vitamins = emptyList(),
+                                    minerals = emptyList(),
+                                    otherNutrients = emptyList(),
+                                    nutritionCoverage = com.akimy.genie.tools.NutritionCoverage(
+                                        covered = emptyList(),
+                                        missing = emptyList(),
+                                        summary = "Searching for: $text"
+                                    )
+                                )
+                            )
+                        )
+                        searchHealthTopic(text)
+                    }
+                } else {
+                    com.akimy.genie.tools.HealthSessionStore.setResult(
+                        com.akimy.genie.tools.HealthResult.Error("No speech detected")
+                    )
+                }
+            }
+            override fun onRmsChanged(rmsdB: Float) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Say health topic...")
+        }
+        healthSTT.startListening(intent)
+    }
+
+    private fun loadBitmapFromUri(uri: android.net.Uri): android.graphics.Bitmap? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val source = android.graphics.ImageDecoder.createSource(contentResolver, uri)
+                android.graphics.ImageDecoder.decodeBitmap(source)
+            } else {
+                @Suppress("DEPRECATION")
+                android.provider.MediaStore.Images.Media.getBitmap(contentResolver, uri)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load bitmap from URI", e)
+            null
+        }
+    }
+
+    // ========================================================================
     // Utility
     // ========================================================================
 
@@ -1271,20 +2008,34 @@ class GenieAccessibilityService : AccessibilityService(),
         val nodes = UINodeParser.findNavigableNodes(root)
         if (nodes.isEmpty()) return false
 
+        val currentIndex = findFocusIndex(nodes, root)
+        val startIndex = when {
+            currentIndex == -1 && step > 0 -> -1
+            currentIndex == -1 && step < 0 -> nodes.size
+            else -> currentIndex
+        }
+
+        for (offset in 1..nodes.size) {
+            val targetIndex = floorMod(startIndex + (step * offset), nodes.size)
+            val target = nodes[targetIndex]
+            if (requestAccessibilityFocus(target)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun findFocusIndex(
+        nodes: List<AccessibilityNodeInfo>,
+        root: AccessibilityNodeInfo,
+    ): Int {
         val current = UINodeParser.findAccessibilityFocusedNode(root)
-        val currentIndex = current?.let { focused ->
+        return current?.let { focused ->
             nodes.indexOfFirst { candidate ->
                 isSameNode(candidate, focused)
             }
         } ?: -1
-
-        val targetIndex = when {
-            currentIndex == -1 && step > 0 -> 0
-            currentIndex == -1 && step < 0 -> nodes.lastIndex
-            else -> (currentIndex + step).coerceIn(0, nodes.lastIndex)
-        }
-
-        return requestAccessibilityFocus(nodes[targetIndex])
     }
 
     private fun requestAccessibilityFocus(node: AccessibilityNodeInfo): Boolean {
@@ -1294,17 +2045,41 @@ class GenieAccessibilityService : AccessibilityService(),
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
     }
 
-    private fun isSameNode(left: AccessibilityNodeInfo, right: AccessibilityNodeInfo): Boolean {
-        val leftBounds = Rect()
-        val rightBounds = Rect()
-        left.getBoundsInScreen(leftBounds)
-        right.getBoundsInScreen(rightBounds)
+    private fun nodeLog(node: AccessibilityNodeInfo): String {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        return "text=${node.text} desc=${node.contentDescription} class=${node.className} " +
+            "id=${node.viewIdResourceName} clickable=${node.isClickable} enabled=${node.isEnabled} " +
+            "visible=${node.isVisibleToUser} a11yFocused=${node.isAccessibilityFocused} bounds=$bounds"
+    }
 
-        return left.packageName == right.packageName &&
-            left.className == right.className &&
-            left.text == right.text &&
-            left.contentDescription == right.contentDescription &&
+    private fun floorMod(value: Int, modulus: Int): Int {
+        val remainder = value % modulus
+        return if (remainder < 0) remainder + modulus else remainder
+    }
+
+    private fun isSameNode(left: AccessibilityNodeInfo, right: AccessibilityNodeInfo): Boolean {
+        // Match on stable semantic fields first
+        if (left.packageName != right.packageName) return false
+        if (left.className != right.className) return false
+        if (left.viewIdResourceName != right.viewIdResourceName) return false
+        if (left.text?.toString() != right.text?.toString()) return false
+        if (left.contentDescription?.toString() != right.contentDescription?.toString()) return false
+
+        // Only require bounds match when semantic fields are all empty/generic
+        val hasStableId = !left.viewIdResourceName.isNullOrEmpty() ||
+            !left.text.isNullOrEmpty() ||
+            !left.contentDescription.isNullOrEmpty()
+
+        return if (hasStableId) {
+            true
+        } else {
+            val leftBounds = Rect()
+            val rightBounds = Rect()
+            left.getBoundsInScreen(leftBounds)
+            right.getBoundsInScreen(rightBounds)
             leftBounds == rightBounds
+        }
     }
 
     /**
