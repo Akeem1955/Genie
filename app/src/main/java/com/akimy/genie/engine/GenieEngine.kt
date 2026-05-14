@@ -93,14 +93,18 @@ class GenieEngine {
         tools: List<ToolProvider> = emptyList(),
         supportsAudio: Boolean = false,
         supportsImage: Boolean = false,
+        maxNumTokens: Int = AGENT_MAX_TOKENS,
+        constrainedDecoding: Boolean = true,
     ): ErrorTaxonomy? = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         try {
-            Log.d(TAG, "Initializing engine with model: $modelPath")
+            @OptIn(ExperimentalApi::class)
+            run { ExperimentalFlags.enableConversationConstrainedDecoding = constrainedDecoding }
+            Log.d(TAG, "Initializing engine with model: $modelPath (constrainedDecoding=$constrainedDecoding)")
             Log.d(
                 TAG,
-                "Using agent config: maxContextLength=$AGENT_MAX_CONTEXT_LENGTH, " +
-                    "maxTokens=$AGENT_MAX_TOKENS, topK=$AGENT_TOP_K, " +
+                "Using agent config: " +
+                    "maxTokens=$maxNumTokens, topK=$AGENT_TOP_K, " +
                     "temperature=$AGENT_TEMPERATURE"
             )
 
@@ -110,7 +114,7 @@ class GenieEngine {
                 backend = Backend.GPU(),
                 visionBackend = if (supportsImage) Backend.GPU() else null,
                 audioBackend = if (supportsAudio) Backend.CPU() else null,
-                maxNumTokens = AGENT_MAX_TOKENS,
+                maxNumTokens = maxNumTokens,
                 cacheDir = context.cacheDir.path,
             )
 

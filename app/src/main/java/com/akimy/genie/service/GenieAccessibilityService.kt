@@ -331,6 +331,8 @@ class GenieAccessibilityService : AccessibilityService(),
                 tools = plannerToolProviders,
                 supportsAudio = modelConfig.supportsAudio,
                 supportsImage = modelConfig.supportsImage,
+                maxNumTokens = 8_192,
+                constrainedDecoding = toolProfile != ToolProfile.AppControl,
             )
             if (error != null) {
                 Log.e(TAG, "Engine init failed: $error")
@@ -580,7 +582,7 @@ class GenieAccessibilityService : AccessibilityService(),
                     onStatusUpdate = { status ->
                         serviceScope.launch(Dispatchers.Main) {
                             setUiState(AgentUIState.Speaking(status))
-                            readTextAloud(status)
+                            //readTextAloud(status)
                         }
                     },
                     onToolExecuting = { title, subtitle ->
@@ -951,15 +953,19 @@ class GenieAccessibilityService : AccessibilityService(),
                     lp.width = WindowManager.LayoutParams.MATCH_PARENT
                     lp.height = WindowManager.LayoutParams.MATCH_PARENT
                     lp.gravity = Gravity.CENTER
+                    lp.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 } else {
                     lp.width = WindowManager.LayoutParams.WRAP_CONTENT
                     lp.height = WindowManager.LayoutParams.WRAP_CONTENT
                     lp.gravity = Gravity.TOP or Gravity.START
+                    lp.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 }
                 wm.updateViewLayout(overlay, lp)
-                Log.d(TAG, "Health window size updated: fullscreen=$isFullscreen")
+                Log.d(TAG, "Health window updated: fullscreen=$isFullscreen")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to update health window size", e)
+                Log.e(TAG, "Failed to update health window", e)
             }
         }
     }

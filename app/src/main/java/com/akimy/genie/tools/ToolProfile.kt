@@ -78,6 +78,22 @@ enum class ToolProfile(
         displayName = "Health",
         description = "Food calorie analyzer and health topics library. Analyze food nutrition or search WHO health information.",
         toolNames = emptySet(),
+    ),
+
+    AppControl(
+        id = "app_control",
+        displayName = "App Control",
+        description = "Autonomous device control. Opens apps, navigates, types, and completes multi-step tasks like sending messages or searching content.",
+        toolNames = setOf(
+            "reply",
+            "open_app",
+            "click",
+            "type_text",
+            "scroll",
+            "go_back",
+            "go_home",
+            "read_screen",
+        ),
     );
 
     companion object {

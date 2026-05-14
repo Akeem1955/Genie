@@ -523,6 +523,43 @@ class ChatPlannerToolSchema : ToolSet {
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
 }
 
+class AppControlPlannerToolSchema : ToolSet {
+    @Tool(description = "Open an installed app by name.")
+    fun open_app(@ToolParam(description = "The visible app name to open (e.g. WhatsApp, Spotify, Gmail, YouTube).") name: String) =
+        declared()
+
+    @Tool(description = "Click a UI element by its exact visible text or content description.")
+    fun click(@ToolParam(description = "The exact text or content description of the element.") target: String) =
+        declared()
+
+    @Tool(description = "Type text into the currently focused input field. The field must already be focused (tapped).")
+    fun type_text(@ToolParam(description = "The text to type.") text: String) =
+        declared()
+
+    @Tool(description = "Read all visible text on the current screen. Use to verify state or find elements.")
+    fun read_screen() = declared()
+
+    @Tool(description = "Scroll the screen up or down to reveal more content.")
+    fun scroll(@ToolParam(description = "The scroll direction: up or down.") direction: String) =
+        declared()
+
+    @Tool(description = "Press the system back button.")
+    fun go_back() = declared()
+
+    @Tool(description = "Press the system home button.")
+    fun go_home() = declared()
+
+    @Tool(description = "Speak a message to the user. Use to confirm completion or ask for clarification.")
+    fun reply(@ToolParam(description = "The message to speak aloud.") message: String) =
+        declared()
+
+    @Tool(description = "Mark the current step or goal as complete.")
+    fun tasks(@ToolParam(description = "A brief completion note.") plan: String) =
+        declared()
+
+    private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
+}
+
 fun geniePlannerToolProviders(profile: ToolProfile = ToolProfile.DEFAULT): List<ToolProvider> {
     return when (profile) {
         ToolProfile.SeeAndTap -> listOf(tool(SeeAndTapPlannerToolSchema()))
@@ -530,7 +567,8 @@ fun geniePlannerToolProviders(profile: ToolProfile = ToolProfile.DEFAULT): List<
         ToolProfile.Teaching -> listOf(tool(TeachingPlannerToolSchema()))
         ToolProfile.Document -> listOf(tool(DocumentPlannerToolSchema()))
         ToolProfile.Chat -> listOf(tool(ChatPlannerToolSchema()))
-        ToolProfile.Scribe -> emptyList() // Scribe is UI-driven, no agent tools needed
-        ToolProfile.Health -> emptyList() // Health is UI-driven, no agent tools needed
+        ToolProfile.Scribe -> emptyList()
+        ToolProfile.Health -> emptyList()
+        ToolProfile.AppControl -> listOf(tool(AppControlPlannerToolSchema()))
     }
 }

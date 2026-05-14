@@ -186,6 +186,10 @@ class AgentOrchestrator(
                     "If the next idea is a process or sequence, use visualize_concept. Otherwise use board_teach_step. " +
                     "Content MUST be a real fact, definition, formula, or example — never a preview. " +
                     "Check steps_taught to avoid repeats. Emit EXACTLY ONE tool call."
+            } else if (toolProfile == ToolProfile.AppControl) {
+                "Execute the user's device control command step by step. " +
+                    "Start with open_app, then read_screen to observe, then act. " +
+                    "ONE tool call per turn. After task is done, call reply to confirm."
             } else {
                 "Handle the user request reactively using the available tools. After any successful read_screen/read_screen_summary that answers the question, call reply. Do not call the same read tool twice in a row for the same request."
             }
@@ -499,6 +503,20 @@ class AgentOrchestrator(
 
                         is Decision.Finish -> {
                             val activePlan = state.plan
+
+                            // Reactive profiles: tasks() signals immediate goal completion
+                            if (isReactiveProfile()) {
+                                Log.d(TAG, "=== Goal Complete (Reactive): ${decision.summary} ===")
+                                EventLogger.emit(GenieEvent.StateTransition("executing", "finished"))
+
+                                if (state.isNovelPlan) {
+                                    writeSkill(state)
+                                }
+
+                                onStatusUpdate(decision.summary)
+                                return@withContext decision.summary
+                            }
+
                             if (activePlan == null) {
                                 Log.d(TAG, "=== Goal Complete: ${decision.summary} ===")
                                 EventLogger.emit(GenieEvent.StateTransition("executing", "finished"))
@@ -810,6 +828,10 @@ class AgentOrchestrator(
 
         val plan = state.plan ?: return
         val step = plan.steps.getOrNull(state.currentStepIndex) ?: return
+
+        // Reactive profiles don't use step-based completion — they loop until explicit reply/tasks
+        if (isReactiveProfile()) return
+
         val stepText = "${step.instruction} ${step.expectedOutcome}".lowercase()
         val resultText = outcome.result.lowercase()
 
@@ -1084,7 +1106,6 @@ class AgentOrchestrator(
     }
 
     private fun stepFinishPreconditionError(state: AgentState, finishSummary: String): String? {
-        // If running in SeeAndTap profile, skip finish precondition enforcement.
         // Visual verification is brittle on Android; allow the planner to claim step completion.
         if (toolProfile == ToolProfile.SeeAndTap) return null
 
@@ -1152,7 +1173,8 @@ class AgentOrchestrator(
             toolProfile == ToolProfile.Reader ||
             toolProfile == ToolProfile.Teaching ||
             toolProfile == ToolProfile.Document ||
-            toolProfile == ToolProfile.Scribe
+            toolProfile == ToolProfile.Scribe ||
+            toolProfile == ToolProfile.AppControl
     }
 
     private fun formStateHasFocusedInput(result: String): Boolean {

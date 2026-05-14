@@ -76,8 +76,8 @@ fun HealthOverlay(
         }
     }
 
-    if (showResults && uiState !is HealthUIState.Idle && uiState !is HealthUIState.Processing) {
-        // Full-screen results panel (only for actual results, not processing)
+    if (showResults && uiState !is HealthUIState.Idle) {
+        // Full-screen results panel
         Box(modifier = Modifier.fillMaxSize()) {
             ResultsPanel(
                 state = uiState,
@@ -125,6 +125,7 @@ fun HealthOverlay(
                             uiState = HealthUIState.Processing("Analyzing screen...")
                             showResults = true
                             onToggleFullscreen(true)
+                            menuExpanded = false
                             onAnalyzeFoodFromScreen()
                         }
 
@@ -145,6 +146,23 @@ fun HealthOverlay(
 
                         // Close
                         Pill("✕", Danger) { onClose() }
+                    }
+                }
+
+                // Loading indicator (shows when processing, even when menu collapsed)
+                AnimatedVisibility(visible = uiState is HealthUIState.Processing) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(StripBg, RoundedCornerShape(10.dp))
+                            .padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Accent,
+                            strokeWidth = 2.dp
+                        )
                     }
                 }
             }
@@ -203,31 +221,24 @@ fun HealthOverlay(
 
 @Composable
 private fun ResultsPanel(state: HealthUIState, onDismiss: () -> Unit) {
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Surface)
-            .padding(16.dp)
+            .background(Color.Transparent)
     ) {
-        // Close button at top
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End
-        ) {
-            Pill("✕", Danger) { onDismiss() }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
         when (state) {
             is HealthUIState.Processing -> {
+                // Bottom-aligned loading indicator like other profiles
                 Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(Surface)
+                        .padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(state.message, color = TextSecondary, fontSize = 16.sp)
-                    Spacer(Modifier.height(16.dp))
+                    Text(state.message, color = TextSecondary, fontSize = 14.sp)
+                    Spacer(Modifier.height(12.dp))
                     LinearProgressIndicator(
                         modifier = Modifier.width(200.dp),
                         color = Accent
@@ -236,22 +247,67 @@ private fun ResultsPanel(state: HealthUIState, onDismiss: () -> Unit) {
             }
 
             is HealthUIState.ShowingFoodAnalysis -> {
-                FoodAnalysisContent(state.analysis, onDismiss)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Surface)
+                        .padding(16.dp)
+                ) {
+                    // Close button at top
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Pill("✕", Danger) { onDismiss() }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    FoodAnalysisContent(state.analysis)
+                }
             }
 
             is HealthUIState.ShowingHealthTopic -> {
-                HealthTopicContent(state.record, onDismiss)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Surface)
+                        .padding(16.dp)
+                ) {
+                    // Close button at top
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Pill("✕", Danger) { onDismiss() }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    HealthTopicContent(state.record)
+                }
             }
 
             is HealthUIState.Error -> {
                 Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Surface)
+                        .padding(16.dp)
                 ) {
-                    Text("⚠ Error", color = Danger, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    // Close button at top
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Pill("✕", Danger) { onDismiss() }
+                    }
                     Spacer(Modifier.height(8.dp))
-                    Text(state.message, color = TextSecondary, fontSize = 14.sp)
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("⚠ Error", color = Danger, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Text(state.message, color = TextSecondary, fontSize = 14.sp)
+                    }
                 }
             }
 
@@ -265,7 +321,7 @@ private fun ResultsPanel(state: HealthUIState, onDismiss: () -> Unit) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun FoodAnalysisContent(analysis: FoodNutritionAnalysis, onDismiss: () -> Unit) {
+private fun FoodAnalysisContent(analysis: FoodNutritionAnalysis) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -352,7 +408,7 @@ private fun NutrientSection(title: String, color: Color, nutrients: List<Nutrien
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun HealthTopicContent(record: HealthRecord, onDismiss: () -> Unit) {
+private fun HealthTopicContent(record: HealthRecord) {
     Column(
         modifier = Modifier
             .fillMaxSize()
