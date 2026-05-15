@@ -41,6 +41,9 @@ You will receive either a planning task or an execution task. The user prompt wi
             if (profile == ToolProfile.Chat) {
                 return chatSystemPrompt()
             }
+            if (profile == ToolProfile.Vision) {
+                return visionSystemPrompt()
+            }
             if (profile == ToolProfile.Reader) {
                 return readerSystemPrompt()
             }
@@ -171,7 +174,7 @@ Answer questions, remember facts about the user, and have natural conversations.
 - tasks(plan): Mark the conversation turn complete (rarely needed)
 
 ## How to Respond
-1. For general questions: Answer directly using reply()
+1. For general knowledge questions: Answer directly using reply()
 2. When user shares personal info: Save it with save_fact(), then acknowledge with reply()
 3. For facts you saved earlier: They appear in "User Preferences" section
 
@@ -180,19 +183,40 @@ Answer questions, remember facts about the user, and have natural conversations.
 2. Be conversational and helpful in your replies
 3. If you don't know something, say so honestly
 4. Never hallucinate facts - if uncertain, acknowledge it
-5. Keep replies concise (1-3 sentences) unless more detail is requested
+5. Keep replies concise (2-4 sentences) unless more detail is requested""".trim()
+        }
 
-## Examples
-User: "what is the protein content of an egg"
-→ reply(message="A large egg contains about 6 grams of protein, with most of it in the egg white.")
+        private fun visionSystemPrompt(): String {
+            return """You are Genie, a visual AI assistant.
 
-User: "my favorite color is blue"
-→ save_fact(key="favorite_color", value="blue")
-Then: reply(message="Got it, I'll remember that your favorite color is blue.")
+## Your Role
+See and analyze what's on the user's screen. Answer questions about images, text, UI elements, and visual content.
 
-User: "I'm allergic to peanuts"
-→ save_fact(key="allergies", value="Peanut")
-Then: reply(message="I've saved that you're allergic to peanuts.")""".trim()
+## Available Tools
+- take_screenshot(): Capture what's currently visible on screen
+- reply(message): Speak your answer or description to the user
+- save_fact(key, value): Remember facts about what you see for future reference
+- tasks(plan): Mark the task complete (rarely needed)
+
+## How to Respond
+1. ALWAYS call take_screenshot() first on every request to see the current screen
+2. After seeing the image, analyze it based on the user's question
+3. Use reply() to describe what you see or answer their question
+4. If you notice something worth remembering (user preferences, context), save it with save_fact()
+
+## What to Look For
+- Text content, labels, buttons, notifications
+- Images, photos, graphics
+- UI layout and navigation elements
+- Colors, shapes, visual patterns
+- Any content relevant to the user's question
+
+## Rules
+1. Call EXACTLY ONE tool per turn. No markdown, no extra text.
+2. ALWAYS take a screenshot before answering visual questions
+3. Be specific and accurate in your descriptions
+4. Reference user preferences when relevant (shown in "User Preferences")
+5. If the image is unclear, say so honestly""".trim()
         }
 
         private fun readerSystemPrompt(): String {
@@ -552,37 +576,41 @@ Read what's on the screen and help users navigate apps without seeing them.
         sb.appendLine(state.goal)
         sb.appendLine()
 
-        sb.appendLine("## Parsed Intent")
-        sb.appendLine(plan.intent.summary)
-        if (plan.intent.entities.isNotEmpty()) {
-            plan.intent.entities.forEach { (key, value) ->
-                sb.appendLine("- $key: $value")
-            }
-        }
-        sb.appendLine()
+        val isAutonomous = toolProfile == ToolProfile.Chat || toolProfile == ToolProfile.Vision || toolProfile == ToolProfile.Reader || toolProfile == ToolProfile.Teaching || toolProfile == ToolProfile.AppControl
 
-        val isAutonomous = toolProfile == ToolProfile.Chat || toolProfile == ToolProfile.Reader || toolProfile == ToolProfile.Teaching || toolProfile == ToolProfile.AppControl
-        if (!isAutonomous) {
-            sb.appendLine("## Plan")
-            plan.steps.forEachIndexed { index, planStep ->
-                val marker = when {
-                    index == state.currentStepIndex -> "[current]"
-                    index < state.currentStepIndex -> "[done]"
-                    else -> "[pending]"
+        // Skip metadata sections for Chat and Vision - system prompt is sufficient
+        if (toolProfile != ToolProfile.Chat && toolProfile != ToolProfile.Vision) {
+            sb.appendLine("## Parsed Intent")
+            sb.appendLine(plan.intent.summary)
+            if (plan.intent.entities.isNotEmpty()) {
+                plan.intent.entities.forEach { (key, value) ->
+                    sb.appendLine("- $key: $value")
                 }
-                sb.appendLine("${index + 1}. $marker ${planStep.instruction}")
-                sb.appendLine("   Expected: ${planStep.expectedOutcome}")
+            }
+            sb.appendLine()
+
+            if (!isAutonomous) {
+                sb.appendLine("## Plan")
+                plan.steps.forEachIndexed { index, planStep ->
+                    val marker = when {
+                        index == state.currentStepIndex -> "[current]"
+                        index < state.currentStepIndex -> "[done]"
+                        else -> "[pending]"
+                    }
+                    sb.appendLine("${index + 1}. $marker ${planStep.instruction}")
+                    sb.appendLine("   Expected: ${planStep.expectedOutcome}")
+                }
+                sb.appendLine()
+            }
+
+            sb.appendLine("## Current Step")
+            sb.appendLine(step.instruction)
+            sb.appendLine("Expected outcome: ${step.expectedOutcome}")
+            if (step.allowedTools.isNotEmpty()) {
+                sb.appendLine("Allowed tools: ${step.allowedTools.joinToString(", ")}")
             }
             sb.appendLine()
         }
-
-        sb.appendLine("## Current Step")
-        sb.appendLine(step.instruction)
-        sb.appendLine("Expected outcome: ${step.expectedOutcome}")
-        if (step.allowedTools.isNotEmpty()) {
-            sb.appendLine("Allowed tools: ${step.allowedTools.joinToString(", ")}")
-        }
-        sb.appendLine()
 
         if (hasVisionInput) {
             sb.appendLine("## Visual Context")
@@ -598,23 +626,26 @@ Read what's on the screen and help users navigate apps without seeing them.
             appendHistoryWindow(sb, state)
         }
 
-        sb.appendLine("## Your Next Action")
-        if (toolProfile == ToolProfile.Teaching) {
-            sb.appendLine("You are in DIRECT TEACHING MODE. You NEVER end the lesson — the user controls that.")
-            sb.appendLine("1. Check steps_taught to see what has already been covered.")
-            sb.appendLine("2. Decide: if the next idea is a process/sequence/hierarchy → call visualize_concept. Otherwise → call board_teach_step.")
-            sb.appendLine("3. Narration must contain a real fact, definition, or example — never a preview.")
-            sb.appendLine("4. Do NOT re-teach a step already shown. Emit EXACTLY ONE tool call.")
-        } else if (isAutonomous) {
-            sb.appendLine("You are in AUTONOMOUS REACTIVE MODE.")
-            sb.appendLine("1. Analyze the PROGRESS LOG to see what you have already tried.")
-            sb.appendLine("2. If the previous action failed, do NOT repeat it. Try a different tool or check the screen with read_screen or take_screenshot.")
-            sb.appendLine("3. If the goal is achieved, call reply() or tasks(plan=\"Goal complete\").")
-            sb.appendLine("4. Otherwise, execute the single best next action.")
-        } else {
-            sb.appendLine("Execute the current step only. Emit exactly one native tool call.")
+        // Skip "Your Next Action" for Chat and Vision - system prompt has all the guidance
+        if (toolProfile != ToolProfile.Chat && toolProfile != ToolProfile.Vision) {
+            sb.appendLine("## Your Next Action")
+            if (toolProfile == ToolProfile.Teaching) {
+                sb.appendLine("You are in DIRECT TEACHING MODE. You NEVER end the lesson — the user controls that.")
+                sb.appendLine("1. Check steps_taught to see what has already been covered.")
+                sb.appendLine("2. Decide: if the next idea is a process/sequence/hierarchy → call visualize_concept. Otherwise → call board_teach_step.")
+                sb.appendLine("3. Narration must contain a real fact, definition, or example — never a preview.")
+                sb.appendLine("4. Do NOT re-teach a step already shown. Emit EXACTLY ONE tool call.")
+            } else if (isAutonomous) {
+                sb.appendLine("You are in AUTONOMOUS REACTIVE MODE.")
+                sb.appendLine("1. Analyze the PROGRESS LOG to see what you have already tried.")
+                sb.appendLine("2. If the previous action failed, do NOT repeat it. Try a different tool or check the screen with read_screen or take_screenshot.")
+                sb.appendLine("3. If the goal is achieved, call reply() or tasks(plan=\"Goal complete\").")
+                sb.appendLine("4. Otherwise, execute the single best next action.")
+            } else {
+                sb.appendLine("Execute the current step only. Emit exactly one native tool call.")
+            }
+            sb.appendLine()
         }
-        sb.appendLine()
 
         return sb.toString()
     }

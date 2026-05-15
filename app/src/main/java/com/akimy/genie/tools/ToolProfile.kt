@@ -66,6 +66,17 @@ enum class ToolProfile(
         ),
     ),
 
+    Vision(
+        id = "vision",
+        displayName = "Vision",
+        description = "Visual assistant that can see and analyze what's on your screen. Answers questions about images, text, and UI elements.",
+        toolNames = setOf(
+            "reply",
+            "take_screenshot",
+            "save_fact",
+        ),
+    ),
+
     Scribe(
         id = "scribe",
         displayName = "Scribe",

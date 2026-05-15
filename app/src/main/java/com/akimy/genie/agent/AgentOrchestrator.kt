@@ -190,6 +190,8 @@ class AgentOrchestrator(
                 "Execute the user's device control command step by step. " +
                     "Start with open_app, then read_screen to observe, then act. " +
                     "ONE tool call per turn. After task is done, call reply to confirm."
+            } else if (toolProfile == ToolProfile.Chat || toolProfile == ToolProfile.Vision) {
+                "" // System prompt is sufficient - no need to repeat instructions every turn
             } else {
                 "Handle the user request reactively using the available tools. After any successful read_screen/read_screen_summary that answers the question, call reply. Do not call the same read tool twice in a row for the same request."
             }
@@ -1170,6 +1172,7 @@ class AgentOrchestrator(
 
     private fun isReactiveProfile(): Boolean {
         return toolProfile == ToolProfile.Chat ||
+            toolProfile == ToolProfile.Vision ||
             toolProfile == ToolProfile.Reader ||
             toolProfile == ToolProfile.Teaching ||
             toolProfile == ToolProfile.Document ||

@@ -523,6 +523,25 @@ class ChatPlannerToolSchema : ToolSet {
     private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
 }
 
+class VisionPlannerToolSchema : ToolSet {
+    @Tool(description = "Capture a screenshot of the current screen to see what's visible.")
+    fun take_screenshot() = declared()
+
+    @Tool(description = "Speak a message to the user through text-to-speech. Use this to describe what you see or answer their question.")
+    fun reply(@ToolParam(description = "The message to speak aloud to the user.") message: String) = declared()
+
+    @Tool(description = "Save a durable fact or preference about the user into long-term memory so you can recall it later.")
+    fun save_fact(
+        @ToolParam(description = "A stable key representing the fact category (e.g. 'dietary_preference', 'name').") key: String,
+        @ToolParam(description = "The exact value or text to remember.") value: String,
+    ) = declared()
+
+    @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
+    fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) = declared()
+
+    private fun declared(): Map<String, String> = mapOf("status" to "schema_only")
+}
+
 class AppControlPlannerToolSchema : ToolSet {
     @Tool(description = "Open an installed app by name.")
     fun open_app(@ToolParam(description = "The visible app name to open (e.g. WhatsApp, Spotify, Gmail, YouTube).") name: String) =
@@ -567,6 +586,7 @@ fun geniePlannerToolProviders(profile: ToolProfile = ToolProfile.DEFAULT): List<
         ToolProfile.Teaching -> listOf(tool(TeachingPlannerToolSchema()))
         ToolProfile.Document -> listOf(tool(DocumentPlannerToolSchema()))
         ToolProfile.Chat -> listOf(tool(ChatPlannerToolSchema()))
+        ToolProfile.Vision -> listOf(tool(VisionPlannerToolSchema()))
         ToolProfile.Scribe -> emptyList()
         ToolProfile.Health -> emptyList()
         ToolProfile.AppControl -> listOf(tool(AppControlPlannerToolSchema()))
