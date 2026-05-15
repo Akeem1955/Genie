@@ -62,6 +62,7 @@ import com.akimy.genie.tools.ToolRegistry
 import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolProfilePrefs
 import com.akimy.genie.tools.ToolServiceContext
+import com.akimy.genie.tools.TeachingPrefs
 import com.akimy.genie.tools.DebugPrefs
 import com.akimy.genie.ui.DebugDocumentPanel
 import com.akimy.genie.ui.DebugToolTestOverlay
@@ -327,7 +328,10 @@ class GenieAccessibilityService : AccessibilityService(),
             val error = genieEngine.initialize(
                 context = this@GenieAccessibilityService,
                 modelPath = modelPath,
-                systemPrompt = PromptBuilder.systemPromptForProfile(toolProfile),
+                systemPrompt = PromptBuilder.systemPromptForProfile(
+                    profile = toolProfile,
+                    teachingLanguage = TeachingPrefs.getTeachingLanguage(this@GenieAccessibilityService),
+                ),
                 tools = plannerToolProviders,
                 supportsAudio = modelConfig.supportsAudio,
                 supportsImage = modelConfig.supportsImage,
@@ -361,7 +365,10 @@ class GenieAccessibilityService : AccessibilityService(),
             withContext(Dispatchers.Main) {
                 if (toolProfile == ToolProfile.Scribe || toolProfile == ToolProfile.Health) {
                     genieEngine.resetConversation(
-                        systemPrompt = PromptBuilder.systemPromptForProfile(toolProfile),
+                        systemPrompt = PromptBuilder.systemPromptForProfile(
+                            profile = toolProfile,
+                            teachingLanguage = TeachingPrefs.getTeachingLanguage(this@GenieAccessibilityService),
+                        ),
                         tools = emptyList(),
                         constrainedDecoding = false,
                     )
@@ -836,6 +843,9 @@ class GenieAccessibilityService : AccessibilityService(),
                                 com.akimy.genie.ImagePickerActivity.pendingCallback = { uri ->
                                     serviceScope.launch {
                                         try {
+                                            com.akimy.genie.tools.HealthSessionStore.setResult(
+                                                com.akimy.genie.tools.HealthResult.Processing("Analyzing calories...")
+                                            )
                                             val bitmap = loadBitmapFromUri(uri)
                                             if (bitmap != null) {
                                                 analyzeFoodImage(bitmap)
@@ -1714,6 +1724,18 @@ class GenieAccessibilityService : AccessibilityService(),
             Log.e(TAG, "Error formatting SOAP note", e)
             throw e
         }
+    }
+
+    override suspend fun searchHealthTopics(query: String): List<String> = withContext(Dispatchers.IO) {
+        val normalized = query.trim()
+        if (normalized.isEmpty()) return@withContext emptyList()
+        healthLibrary.searchTopics(normalized)
+    }
+
+    override suspend fun getHealthTopic(name: String): com.akimy.genie.tools.HealthRecord? = withContext(Dispatchers.IO) {
+        val normalized = name.trim()
+        if (normalized.isEmpty()) return@withContext null
+        healthLibrary.queryTopic(normalized)
     }
 
     // ========================================================================

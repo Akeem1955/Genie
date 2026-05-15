@@ -110,5 +110,7 @@ class VisualizeConceptToolValidationTest {
         override suspend fun readDialog(): String = ""
         override suspend fun readNotifications(limit: Int): String = ""
         override suspend fun readFormState(): String = ""
+        override suspend fun searchHealthTopics(query: String): List<String> = emptyList()
+        override suspend fun getHealthTopic(name: String): HealthRecord? = null
     }
 }

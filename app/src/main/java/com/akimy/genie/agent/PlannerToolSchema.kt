@@ -517,6 +517,14 @@ class ChatPlannerToolSchema : ToolSet {
         @ToolParam(description = "The exact value or text to remember.") value: String,
     ) = declared()
 
+    @Tool(description = "Search local WHO health topics and return matching names.")
+    fun health_search_topics(@ToolParam(description = "The health query or topic name fragment.") query: String) =
+      declared()
+
+    @Tool(description = "Fetch a specific WHO health topic record by exact name.")
+    fun health_get_topic(@ToolParam(description = "The exact topic name to load from the WHO list.") name: String) =
+      declared()
+
     @Tool(description = "Submit a plan payload or mark completion. During plan execution this completes the current plan step; when no plan step is active this finishes the whole goal.")
     fun tasks(@ToolParam(description = "A brief completion note, or JSON when the prompt explicitly asks for a JSON plan.") plan: String) = declared()
 

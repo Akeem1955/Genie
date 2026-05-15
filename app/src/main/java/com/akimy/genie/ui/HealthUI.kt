@@ -66,6 +66,7 @@ fun HealthOverlay(
     LaunchedEffect(Unit) {
         HealthSessionStore.resultFlow.collect { result ->
             uiState = when (result) {
+                is HealthResult.Processing -> HealthUIState.Processing(result.message)
                 is HealthResult.FoodAnalysis -> HealthUIState.ShowingFoodAnalysis(result.analysis)
                 is HealthResult.HealthTopic -> HealthUIState.ShowingHealthTopic(result.record)
                 is HealthResult.Error -> HealthUIState.Error(result.message)
@@ -131,6 +132,7 @@ fun HealthOverlay(
 
                         // Pick image from gallery
                         Pill("🖼", Accent) {
+                            menuExpanded = false
                             onRequestGalleryPick()
                         }
 

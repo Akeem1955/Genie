@@ -63,6 +63,8 @@ enum class ToolProfile(
         toolNames = setOf(
             "reply",
             "save_fact",
+            "health_search_topics",
+            "health_get_topic",
         ),
     ),
 

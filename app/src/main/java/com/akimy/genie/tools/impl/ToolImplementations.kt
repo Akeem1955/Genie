@@ -2,8 +2,13 @@ package com.akimy.genie.tools.impl
 
 import com.akimy.genie.agent.ToolOutcome
 import com.akimy.genie.tools.BOARD_OBJECT_TYPES
+import com.akimy.genie.tools.DataValue
 import com.akimy.genie.tools.GenieTool
+import com.akimy.genie.tools.HealthRecord
 import com.akimy.genie.tools.ToolServiceContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 // ============================================================================
 // Agent communication tools
@@ -528,6 +533,88 @@ class RetrieveFactTool : GenieTool {
         val key = args["key"] ?: return ToolOutcome.LogicErr("Missing 'key' argument")
         // Actual retrieval is handled by the orchestrator via the database
         return ToolOutcome.Ok("RETRIEVE_FACT:$key")
+    }
+}
+
+// ============================================================================
+// Health tools (local WHO health library)
+// ============================================================================
+
+@Serializable
+private data class HealthTopicSearchResult(
+    val query: String,
+    val matches: List<String>,
+    val totalMatches: Int,
+)
+
+@Serializable
+private data class HealthTopicToolResult(
+    val disease: String,
+    val urlSource: String,
+    val sections: Map<String, DataValue>,
+    val totalSections: Int,
+    val truncated: Boolean,
+)
+
+private val HEALTH_JSON = Json { encodeDefaults = true }
+
+class HealthSearchTopicsTool : GenieTool {
+    override val name = "health_search_topics"
+    override val description = "Search local WHO health topics and return matching names"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val query = args["query"]?.trim().orEmpty()
+        if (query.isEmpty()) return ToolOutcome.LogicErr("Missing or empty 'query' argument")
+
+        val matches = serviceContext.searchHealthTopics(query)
+        val payload = HealthTopicSearchResult(
+            query = query,
+            matches = matches,
+            totalMatches = matches.size,
+        )
+
+        return ToolOutcome.Ok(HEALTH_JSON.encodeToString(payload))
+    }
+}
+
+class HealthGetTopicTool : GenieTool {
+    override val name = "health_get_topic"
+    override val description = "Fetch a specific WHO health topic record by exact name"
+
+    override suspend fun execute(args: Map<String, String>, serviceContext: ToolServiceContext): ToolOutcome {
+        val name = args["name"]?.trim().orEmpty()
+        if (name.isEmpty()) return ToolOutcome.LogicErr("Missing or empty 'name' argument")
+
+        val record = serviceContext.getHealthTopic(name)
+            ?: return ToolOutcome.LogicErr("No health topic found for '$name'")
+
+        val trimmed = trimRecord(record, maxSections = 8, maxChars = 600)
+        return ToolOutcome.Ok(HEALTH_JSON.encodeToString(trimmed))
+    }
+
+    private fun trimRecord(record: HealthRecord, maxSections: Int, maxChars: Int): HealthTopicToolResult {
+        val entries = record.data.entries.toList()
+        val trimmedSections = linkedMapOf<String, DataValue>()
+
+        for ((key, value) in entries.take(maxSections)) {
+            trimmedSections[key] = truncateDataValue(value, maxChars)
+        }
+
+        return HealthTopicToolResult(
+            disease = record.disease,
+            urlSource = record.url_source,
+            sections = trimmedSections,
+            totalSections = entries.size,
+            truncated = entries.size > maxSections,
+        )
+    }
+
+    private fun truncateDataValue(value: DataValue, maxChars: Int): DataValue {
+        return when (value) {
+            is DataValue.Text -> DataValue.Text(value.value.take(maxChars))
+            is DataValue.ListText -> DataValue.ListText(value.value.map { it.take(maxChars) })
+            is DataValue.NestedMap -> DataValue.NestedMap(value.value.mapValues { it.value.take(maxChars) })
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 package com.akimy.genie.tools
 
 import android.content.Context
+import android.util.Log
 import com.akimy.genie.data.GenieDatabase
 import com.akimy.genie.data.VisualizerSceneDao
 import com.akimy.genie.data.VisualizerSceneEntity
@@ -515,14 +516,45 @@ object VisualizerSceneStore {
         return normalized.withCurrentStep(stepId)
     }
 
+    private fun logJsonFailure(label: String, raw: String?, e: Exception) {
+        val message = e.message.orEmpty()
+        val offset = Regex("offset (\\d+)").find(message)?.groupValues?.get(1)?.toIntOrNull()
+        val safeRaw = raw.orEmpty()
+        val snippet = if (offset != null && safeRaw.isNotEmpty()) {
+            val start = (offset - 80).coerceAtLeast(0)
+            val end = (offset + 80).coerceAtMost(safeRaw.length)
+            safeRaw.substring(start, end)
+        } else {
+            safeRaw.take(400)
+        }
+        Log.e("VisualizerSceneStore", "$label JSON parse failed. len=${safeRaw.length}, offset=$offset, snippet=$snippet")
+    }
+
+    private fun normalizeJsonKeys(obj: JsonObject): Map<String, JsonElement> {
+        return obj.entries.associate { (key, value) -> key.trim() to value }
+    }
+
+    private fun readJsonString(element: JsonElement?): String? {
+        return when (element) {
+            is JsonPrimitive -> element.contentOrNull ?: element.toString().trim('"')
+            else -> element?.toString()?.trim('"')
+        }
+    }
+
     private fun parseNodes(raw: String?): List<VisualNode>? {
         if (raw.isNullOrBlank()) return emptyList()
-        val arr = json.parseToJsonElement(raw) as? JsonArray ?: return null
+        val arr = try {
+            json.parseToJsonElement(raw) as? JsonArray
+        } catch (e: Exception) {
+            logJsonFailure("nodes", raw, e)
+            return null
+        } ?: return null
         val nodes = arr.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
-            val id = obj["id"]?.toString()?.trim('"')?.trim().orEmpty()
-            val label = obj["label"]?.toString()?.trim('"')?.trim().orEmpty()
-            val kind = obj["kind"]?.toString()?.trim('"')?.trim().orEmpty().ifBlank { "concept" }
+            val normalized = normalizeJsonKeys(obj)
+            val id = readJsonString(normalized["id"])?.trim().orEmpty()
+            val label = readJsonString(normalized["label"])?.trim().orEmpty()
+            val kind = readJsonString(normalized["kind"])?.trim().orEmpty().ifBlank { "concept" }
             if (id.isBlank() || label.isBlank()) null else VisualNode(id, label.take(MAX_LABEL_LEN), kind)
         }
         return if (nodes.size == arr.size) nodes else null
@@ -530,13 +562,19 @@ object VisualizerSceneStore {
 
     private fun parseEdges(raw: String?): List<VisualEdge>? {
         if (raw.isNullOrBlank()) return emptyList()
-        val arr = json.parseToJsonElement(raw) as? JsonArray ?: return null
+        val arr = try {
+            json.parseToJsonElement(raw) as? JsonArray
+        } catch (e: Exception) {
+            logJsonFailure("edges", raw, e)
+            return null
+        } ?: return null
         val edges = arr.mapNotNull { element ->
             val obj = element as? JsonObject ?: return@mapNotNull null
-            val from = obj["from"]?.toString()?.trim('"')?.trim().orEmpty()
-            val to = obj["to"]?.toString()?.trim('"')?.trim().orEmpty()
-            val label = obj["label"]?.toString()?.trim('"')?.trim()
-            val style = obj["style"]?.toString()?.trim('"')?.trim()
+            val normalized = normalizeJsonKeys(obj)
+            val from = readJsonString(normalized["from"])?.trim().orEmpty()
+            val to = readJsonString(normalized["to"])?.trim().orEmpty()
+            val label = readJsonString(normalized["label"])?.trim()
+            val style = readJsonString(normalized["style"])?.trim()
             if (from.isBlank() || to.isBlank()) null else VisualEdge(from, to, label?.take(MAX_LABEL_LEN), style)
         }
         return if (edges.size == arr.size) edges else null

@@ -57,6 +57,8 @@ class ToolRegistry {
         register(ReadFormStateTool())
         register(SaveFactTool())
         register(RetrieveFactTool())
+        register(HealthSearchTopicsTool())
+        register(HealthGetTopicTool())
         register(ReadPdfPageRangeTool())
         register(ListDevicePdfsTool())
         register(DetectOpenPdfTool())

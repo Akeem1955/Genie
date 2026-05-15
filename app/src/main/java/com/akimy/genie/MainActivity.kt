@@ -44,6 +44,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -73,6 +74,7 @@ import com.akimy.genie.service.ScreenMapStore
 import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolProfilePrefs
 import com.akimy.genie.tools.DebugPrefs
+import com.akimy.genie.tools.TeachingPrefs
 import com.akimy.genie.tools.VisualizerSceneStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -512,6 +514,10 @@ fun GenieSetupScreen(
                     .padding(bottom = 10.dp),
             )
 
+            var teachingLanguage by remember {
+                mutableStateOf(TeachingPrefs.getTeachingLanguage(context))
+            }
+
             ToolProfile.values().forEach { profile ->
                 val isSelected = profile.id == selectedToolProfileId
                 val profileShape = RoundedCornerShape(16.dp)
@@ -567,6 +573,34 @@ fun GenieSetupScreen(
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (profile == ToolProfile.Teaching) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Teaching language",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = teachingLanguage,
+                                onValueChange = { value ->
+                                    teachingLanguage = value
+                                    TeachingPrefs.setTeachingLanguage(context, value)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                placeholder = {
+                                    Text("English", fontSize = 12.sp)
+                                },
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Used in the teaching prompt for narration and labels.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }

@@ -6,6 +6,7 @@ import com.akimy.genie.data.Skill
 import com.akimy.genie.data.SkillDao
 import com.akimy.genie.data.UserFact
 import com.akimy.genie.engine.GenieEngine
+import com.akimy.genie.tools.HealthRecord
 import com.akimy.genie.tools.ScreenContext
 import com.akimy.genie.tools.ToolRegistry
 import com.akimy.genie.tools.ToolServiceContext
@@ -139,6 +140,8 @@ class AgentOrchestratorSkillFallbackTest {
         override suspend fun readDialog(): String = ""
         override suspend fun readNotifications(limit: Int): String = ""
         override suspend fun readFormState(): String = ""
+        override suspend fun searchHealthTopics(query: String): List<String> = emptyList()
+        override suspend fun getHealthTopic(name: String): HealthRecord? = null
     }
 
     private class FakeFactDao : FactDao {

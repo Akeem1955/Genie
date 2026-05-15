@@ -160,6 +160,12 @@ interface ToolServiceContext {
     /** Format transcription into SOAP note structure */
     suspend fun formatSoapNote(transcription: String, outputLanguage: String): SoapNote
 
+    /** Search local WHO health topics for matching names */
+    suspend fun searchHealthTopics(query: String): List<String>
+
+    /** Load a specific WHO health topic record by exact name */
+    suspend fun getHealthTopic(name: String): HealthRecord?
+
 }
 
 data class ViewportInfo(

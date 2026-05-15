@@ -29,6 +29,7 @@ import com.akimy.genie.tools.QuizQuestion
 import com.akimy.genie.tools.QuizSession
 import com.akimy.genie.tools.QuizStore
 import com.akimy.genie.tools.SceneStoreResult
+import com.akimy.genie.tools.TeachingPrefs
 import com.akimy.genie.tools.ToolRegistry
 import com.akimy.genie.tools.ToolProfile
 import com.akimy.genie.tools.ToolServiceContext
@@ -101,6 +102,7 @@ class AgentOrchestrator(
     private val persistentChatHistory = mutableListOf<HistoryEntry>()
     private val persistentTeachingHistory = mutableListOf<HistoryEntry>()
     private var teachingLessonTitle: String? = null
+    private var lastVisualizeSceneId: String? = null
 
     suspend fun executeGoal(
         goal: String,
@@ -335,7 +337,12 @@ class AgentOrchestrator(
                                     }
 
                                     if (toolProfile == ToolProfile.Teaching && isTeachingBoardTool(decision.tool)) {
-                                        openTeachingBoardScene(decision.args["scene_id"] ?: DEFAULT_TEACHING_SCENE_ID)
+                                        val sceneIdToOpen = if (decision.tool == "visualize_concept") {
+                                            lastVisualizeSceneId ?: decision.args["scene_id"] ?: DEFAULT_TEACHING_SCENE_ID
+                                        } else {
+                                            decision.args["scene_id"] ?: DEFAULT_TEACHING_SCENE_ID
+                                        }
+                                        openTeachingBoardScene(sceneIdToOpen)
                                         teachingBoardSuccessCount++
                                         if (shouldPauseTeachingTurn(decision.tool, teachingBoardSuccessCount)) {
                                             val message = teachingPauseMessage(decision.tool)
@@ -1338,9 +1345,30 @@ class AgentOrchestrator(
     }
 
     private fun handleVisualizeConcept(args: Map<String, String>): ToolOutcome {
-        val normalized = normalizeVisualizeArgs(args) ?: return ToolOutcome.LogicErr(
-            "Invalid visualize_concept args. Require valid operation, scene_id, and bounded JSON payloads."
-        )
+        var normalized = normalizeVisualizeArgs(args)
+        if (normalized == null) {
+            val reason = explainVisualizeArgsFailure(args)
+            Log.w(TAG, "visualize_concept invalid args: $reason | args=$args")
+            return ToolOutcome.LogicErr(
+                "Invalid visualize_concept args. $reason"
+            )
+        }
+
+        if (normalized.operation == "create_scene" || normalized.operation == "update_scene") {
+            val existing = VisualizerSceneStore.getSnapshot(normalized.sceneId)
+            if (existing?.scene?.board != null) {
+                val conceptSceneId = conceptSceneIdFor(normalized.sceneId)
+                Log.d(TAG, "visualize_concept target is board scene; redirecting to '$conceptSceneId'")
+                normalized = normalized.copy(sceneId = conceptSceneId)
+            }
+        }
+
+        if (normalized.operation == "create_scene" && VisualizerSceneStore.getSnapshot(normalized.sceneId) != null) {
+            Log.d(TAG, "visualize_concept scene exists; switching create to update for '${normalized.sceneId}'")
+            normalized = normalized.copy(operation = "update_scene")
+        }
+
+        lastVisualizeSceneId = normalized.sceneId
 
         val result = when (normalized.operation) {
             "create_scene" -> {
@@ -1375,7 +1403,47 @@ class AgentOrchestrator(
             )
         }
 
+        Log.d(TAG, "visualize_concept result: ok=${result.ok}, msg=${result.message}")
         return if (result.ok) ToolOutcome.Ok(result.message) else ToolOutcome.LogicErr(result.message)
+    }
+
+    private fun explainVisualizeArgsFailure(args: Map<String, String>): String {
+        val rawOp = args["operation"]?.trim()?.lowercase()
+        val operation = when {
+            rawOp.isNullOrEmpty() -> "update_scene"
+            rawOp.startsWith("create") -> "create_scene"
+            rawOp.startsWith("update") -> "update_scene"
+            rawOp.startsWith("highlight") || rawOp == "focus" -> "highlight"
+            rawOp.startsWith("clear") || rawOp.startsWith("delete") -> "clear_scene"
+            rawOp.startsWith("export") -> "export_scene"
+            else -> null
+        } ?: return "Invalid operation '$rawOp'"
+
+        val sceneId = args["scene_id"]?.trim() ?: return "Missing scene_id"
+        if (!SCENE_ID_PATTERN.matches(sceneId)) return "Invalid scene_id '$sceneId'"
+
+        val rawNodes = args["nodes"]?.trim()
+        val rawEdges = args["edges"]?.trim()
+        if ((rawNodes?.length ?: 0) > MAX_VISUALIZER_JSON_CHARS) return "nodes JSON too large"
+        if ((rawEdges?.length ?: 0) > MAX_VISUALIZER_JSON_CHARS) return "edges JSON too large"
+
+        val diagramType = args["diagram_type"]?.trim()?.lowercase()
+        if (operation == "create_scene" && (diagramType == null || diagramType !in ALLOWED_DIAGRAM_TYPES)) {
+            return "Invalid diagram_type '$diagramType'"
+        }
+
+        return "Malformed nodes/edges JSON or missing required fields"
+    }
+
+    private fun conceptSceneIdFor(sceneId: String): String {
+        val suffix = "_concept"
+        val maxLen = 64
+        val base = if (sceneId.length + suffix.length <= maxLen) {
+            sceneId
+        } else {
+            sceneId.take(maxLen - suffix.length)
+        }
+        return base + suffix
     }
 
     private fun shouldPrepareTeachingBoard(goal: String): Boolean {
@@ -2111,7 +2179,10 @@ class AgentOrchestrator(
     private fun restoreAgentMode() {
         val profile = toolProfile ?: ToolProfile.DEFAULT
         engine.resetConversation(
-            systemPrompt = PromptBuilder.systemPromptForProfile(profile),
+            systemPrompt = PromptBuilder.systemPromptForProfile(
+                profile = profile,
+                teachingLanguage = TeachingPrefs.getTeachingLanguage(appContext),
+            ),
             tools = geniePlannerToolProviders(profile),
             constrainedDecoding = true,
         )

@@ -78,6 +78,7 @@ data class HealthTopicIndex(
 // ═══════════════════════════════════════════════════════════════════════════
 
 sealed class HealthResult {
+    data class Processing(val message: String) : HealthResult()
     data class FoodAnalysis(val analysis: FoodNutritionAnalysis) : HealthResult()
     data class HealthTopic(val record: HealthRecord) : HealthResult()
     data class Error(val message: String) : HealthResult()
