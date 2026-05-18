@@ -33,6 +33,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -54,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -184,11 +186,18 @@ class VisualizerCanvasActivity : ComponentActivity() {
     }
 }
 
+private data class NavState(val sceneId: String, val stepId: String?)
+
 @Composable
 private fun UnifiedVisualizerScreen(initialSceneId: String?, overrideSceneId: String? = null) {
     val context = LocalContext.current
     var refreshTick by remember { mutableLongStateOf(0L) }
-    var sceneId by remember { mutableStateOf(initialSceneId) }
+    
+    var navStack by remember { 
+        val initStepId = initialSceneId?.let { VisualizerSceneStore.getSnapshot(it)?.scene?.board?.currentStepId }
+        mutableStateOf(listOf(NavState(initialSceneId ?: "teaching_session", initStepId))) 
+    }
+    var navIndex by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -199,17 +208,21 @@ private fun UnifiedVisualizerScreen(initialSceneId: String?, overrideSceneId: St
 
     LaunchedEffect(overrideSceneId) {
         if (overrideSceneId != null) {
-            sceneId = overrideSceneId
-            refreshTick = System.currentTimeMillis()
+            val currentState = navStack.getOrNull(navIndex)
+            val newStepId = VisualizerSceneStore.getSnapshot(overrideSceneId)?.scene?.board?.currentStepId
+            val newState = NavState(overrideSceneId, newStepId)
+            
+            if (currentState != newState) {
+                navStack = navStack.take(navIndex + 1) + newState
+                navIndex = navStack.lastIndex
+                refreshTick = System.currentTimeMillis()
+            }
         }
     }
 
-    val snapshot = remember(refreshTick, sceneId) {
-        if (sceneId.isNullOrBlank()) {
-            VisualizerSceneStore.getLatestSnapshot()
-        } else {
-            VisualizerSceneStore.getSnapshot(sceneId!!)
-        }
+    val currentNav = navStack.getOrNull(navIndex) ?: return
+    val snapshot = remember(refreshTick, currentNav) {
+        VisualizerSceneStore.getSnapshot(currentNav.sceneId)
     }
 
     if (snapshot == null) {
@@ -221,10 +234,44 @@ private fun UnifiedVisualizerScreen(initialSceneId: String?, overrideSceneId: St
         return
     }
 
-    sceneId = snapshot.scene.sceneId
-
     UnifiedTeachingScreen(
         snapshot = snapshot,
+        hasPrev = navIndex > 0,
+        isAtHistoryEdge = navIndex == navStack.lastIndex,
+        onPrev = {
+            if (navIndex > 0) {
+                navIndex--
+                val target = navStack[navIndex]
+                if (target.stepId != null) {
+                    VisualizerSceneStore.boardRevealStep(target.sceneId, target.stepId)
+                }
+                refreshTick = System.currentTimeMillis()
+            }
+        },
+        onNext = {
+            if (navIndex < navStack.lastIndex) {
+                navIndex++
+                val target = navStack[navIndex]
+                if (target.stepId != null) {
+                    VisualizerSceneStore.boardRevealStep(target.sceneId, target.stepId)
+                }
+                refreshTick = System.currentTimeMillis()
+            } else {
+                val board = snapshot.scene.board
+                if (board != null && board.currentStepIndex() < board.steps.lastIndex) {
+                    VisualizerSceneStore.boardNextStep(snapshot.scene.sceneId)
+                    val newStepId = VisualizerSceneStore.getSnapshot(snapshot.scene.sceneId)?.scene?.board?.currentStepId
+                    navStack = navStack + NavState(snapshot.scene.sceneId, newStepId)
+                    navIndex = navStack.lastIndex
+                    refreshTick = System.currentTimeMillis()
+                } else {
+                    val requested = GenieAccessibilityService.requestTeachingCommand("next")
+                    if (requested) {
+                        Toast.makeText(context, "Asking Genie for the next step", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        },
         onRefresh = { refreshTick = System.currentTimeMillis() },
         onClose = { (context as? ComponentActivity)?.finish() }
     )
@@ -233,6 +280,10 @@ private fun UnifiedVisualizerScreen(initialSceneId: String?, overrideSceneId: St
 @Composable
 private fun UnifiedTeachingScreen(
     snapshot: SceneSnapshot,
+    hasPrev: Boolean,
+    isAtHistoryEdge: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
     onRefresh: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -250,7 +301,6 @@ private fun UnifiedTeachingScreen(
         val tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 ttsReady = true
-                ttsRef.value?.language = Locale.US
             }
         }
         ttsRef.value = tts
@@ -301,15 +351,11 @@ private fun UnifiedTeachingScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = stepLabel,
                         color = MaterialTheme.colorScheme.tertiary,
                         fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 
@@ -364,8 +410,9 @@ private fun UnifiedTeachingScreen(
                         text = narration,
                         color = MaterialTheme.colorScheme.onSurface,
                         fontSize = 14.sp,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .heightIn(max = 140.dp)
+                            .verticalScroll(rememberScrollState())
                     )
                 }
                 Row(
@@ -375,36 +422,18 @@ private fun UnifiedTeachingScreen(
                 ) {
                     if (isBoard && board != null) {
                         Button(
-                            enabled = board.steps.isNotEmpty(),
-                            onClick = {
-                                VisualizerSceneStore.boardPrevStep(snapshot.scene.sceneId)
-                                onRefresh()
-                            },
+                            enabled = hasPrev,
+                            onClick = onPrev,
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                         ) {
                             Text("Back", color = MaterialTheme.colorScheme.onSurface)
                         }
                         Button(
-                            enabled = board.steps.isNotEmpty(),
-                            onClick = {
-                                val isAtLastStep = board.currentStepIndex() >= board.steps.lastIndex
-                                if (isAtLastStep) {
-                                    val requested = GenieAccessibilityService.requestTeachingCommand("next")
-                                    if (!requested) {
-                                        VisualizerSceneStore.boardNextStep(snapshot.scene.sceneId)
-                                        onRefresh()
-                                    } else {
-                                        Toast.makeText(context, "Asking Genie for the next step", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    VisualizerSceneStore.boardNextStep(snapshot.scene.sceneId)
-                                    onRefresh()
-                                }
-                            },
+                            onClick = onNext,
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                         ) {
-                            val isAtLastStep = board.currentStepIndex() >= board.steps.lastIndex
-                            Text(if (isAtLastStep) "Generate Next" else "Next", color = Color.White)
+                            val needsGenie = isAtHistoryEdge && board.currentStepIndex() >= board.steps.lastIndex
+                            Text(if (needsGenie) "Generate Next" else "Next", color = Color.White)
                         }
                         TextButton(
                             enabled = board.steps.isNotEmpty(),
@@ -423,16 +452,18 @@ private fun UnifiedTeachingScreen(
                         )
                     } else {
                         Button(
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = {
-                                val requested = GenieAccessibilityService.requestTeachingCommand("next")
-                                if (requested) {
-                                    Toast.makeText(context, "Asking Genie for the next step", Toast.LENGTH_SHORT).show()
-                                }
-                            },
+                            enabled = hasPrev,
+                            onClick = onPrev,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        ) {
+                            Text("Back", color = MaterialTheme.colorScheme.onSurface)
+                        }
+                        Button(
+                            modifier = Modifier.weight(1f),
+                            onClick = onNext,
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                         ) {
-                            Text("Generate Next", color = Color.White)
+                            Text(if (isAtHistoryEdge) "Generate Next" else "Next", color = Color.White)
                         }
                     }
                 }
@@ -460,6 +491,12 @@ private fun ZoomableVisualizerCanvas(snapshot: SceneSnapshot) {
     var translateX by remember { mutableFloatStateOf(0f) }
     var translateY by remember { mutableFloatStateOf(0f) }
 
+    val animatable = remember(snapshot.scene.sceneId) { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(snapshot.scene.sceneId) {
+        animatable.animateTo(1f, animationSpec = androidx.compose.animation.core.tween(1500, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+    }
+    val progress = animatable.value
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -485,9 +522,13 @@ private fun ZoomableVisualizerCanvas(snapshot: SceneSnapshot) {
             if (isBoard) {
                 drawTeachingBoard(snapshot.scene)
             } else {
-                layout.edgeLayouts.forEach { edge ->
+                layout.edgeLayouts.forEachIndexed { idx, edge ->
+                    val edgeProgress = (progress * 2.5f - (idx * 0.2f)).coerceIn(0f, 1f)
+                    if (edgeProgress <= 0f) return@forEachIndexed
+
                     val isFocused = focusSet.contains(edge.from) || focusSet.contains(edge.to)
-                    val color = if (isFocused) Color(0xFF0B8A5A) else Color(0xFF334155)
+                    val baseColor = if (isFocused) Color(0xFF0B8A5A) else Color(0xFF334155)
+                    val color = baseColor.copy(alpha = edgeProgress)
                     val stroke = if (isFocused) 3.1f else 2.0f
 
                     val points = edge.points
@@ -511,21 +552,31 @@ private fun ZoomableVisualizerCanvas(snapshot: SceneSnapshot) {
                     }
                 }
 
-                layout.nodeLayouts.forEach { node ->
+                layout.nodeLayouts.forEachIndexed { idx, node ->
+                    val nodeProgress = (progress * 2.5f - (idx * 0.2f)).coerceIn(0f, 1f)
+                    if (nodeProgress <= 0f) return@forEachIndexed
+
                     val isFocused = focusSet.contains(node.id)
-                    val bg = if (isFocused) Color(0xFFDCFCE7) else Color(0xFFFFFFFF)
-                    val border = if (isFocused) Color(0xFF0B8A5A) else Color(0xFF1E293B)
+                    val baseBg = if (isFocused) Color(0xFFDCFCE7) else Color(0xFFFFFFFF)
+                    val baseBorder = if (isFocused) Color(0xFF0B8A5A) else Color(0xFF1E293B)
+                    
+                    val bg = baseBg.copy(alpha = nodeProgress)
+                    val border = baseBorder.copy(alpha = nodeProgress)
+
+                    val scaleNode = 0.9f + (0.1f * nodeProgress)
+                    val drawX = node.x + (node.width * (1f - scaleNode) / 2f)
+                    val drawY = node.y + (node.height * (1f - scaleNode) / 2f)
 
                     drawRoundRect(
                         color = bg,
-                        topLeft = Offset(node.x, node.y),
-                        size = Size(node.width, node.height),
+                        topLeft = Offset(drawX, drawY),
+                        size = Size(node.width * scaleNode, node.height * scaleNode),
                         cornerRadius = CornerRadius(14f, 14f),
                     )
                     drawRoundRect(
                         color = border,
-                        topLeft = Offset(node.x, node.y),
-                        size = Size(node.width, node.height),
+                        topLeft = Offset(drawX, drawY),
+                        size = Size(node.width * scaleNode, node.height * scaleNode),
                         cornerRadius = CornerRadius(14f, 14f),
                         style = Stroke(width = if (isFocused) 2.7f else 1.5f),
                     )
@@ -534,15 +585,16 @@ private fun ZoomableVisualizerCanvas(snapshot: SceneSnapshot) {
                     val lines = VisualizerExportManager.wrapLabelForNode(label)
                     val lineHeight = 21f
                     val startY = node.y + (node.height / 2f) - ((lines.size - 1) * lineHeight / 2f) + 6f
-                    lines.forEachIndexed { idx, line ->
+                    lines.forEachIndexed { lineIdx, line ->
                         drawContext.canvas.nativeCanvas.drawText(
                             line,
                             node.x + 12f,
-                            startY + (idx * lineHeight),
+                            startY + (lineIdx * lineHeight),
                             Paint().apply {
                                 isAntiAlias = true
-                                textSize = 24f
-                                color = android.graphics.Color.parseColor("#0F172A")
+                                textSize = 24f * scaleNode
+                                this.color = android.graphics.Color.parseColor("#0F172A")
+                                alpha = (255 * nodeProgress).toInt()
                                 textAlign = Paint.Align.CENTER
                             }
                         )
